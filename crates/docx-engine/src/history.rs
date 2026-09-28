@@ -81,6 +81,10 @@ impl Step {
         &self.label
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.patches.is_empty()
+    }
+
     pub fn apply(&self, package: &mut Package) -> Result<()> {
         self.patches.iter().try_for_each(|p| p.swap(package, true))
     }
@@ -100,6 +104,8 @@ pub(crate) struct History {
     next_id: u64,
     /// Id of the newest undo step when the document was last saved; 0 = never edited.
     saved: u64,
+    /// Steps recorded while a group is open are merged into it.
+    group: Option<Step>,
 }
 
 impl History {
@@ -125,11 +131,33 @@ impl History {
     }
 
     pub fn push(&mut self, step: Step) {
+        if let Some(group) = self.group.as_mut() {
+            group.patches.extend(step.patches);
+            return;
+        }
         self.undo.push(step);
         if self.undo.len() > LIMIT {
             self.undo.remove(0);
         }
         self.redo.clear();
+    }
+
+    pub fn in_group(&self) -> bool {
+        self.group.is_some()
+    }
+
+    pub fn begin_group(&mut self, label: &str) {
+        self.next_id += 1;
+        self.group = Some(Step {
+            id: self.next_id,
+            label: label.to_string(),
+            patches: Vec::new(),
+        });
+    }
+
+    /// Closes the open group and returns it; the caller pushes or reverts it.
+    pub fn end_group(&mut self) -> Option<Step> {
+        self.group.take()
     }
 
     pub fn take_undo(&mut self) -> Option<Step> {

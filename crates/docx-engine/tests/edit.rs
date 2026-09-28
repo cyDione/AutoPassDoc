@@ -423,3 +423,32 @@ fn renames_authors_and_adds_replies() {
     doc.undo().unwrap();
     assert!(!doc.is_modified());
 }
+
+#[test]
+fn groups_several_changes_into_one_undo_step() {
+    let body = r#"<w:p><w:commentRangeStart w:id="1"/><w:r><w:t>原句。</w:t></w:r><w:commentRangeEnd w:id="1"/><w:r><w:commentReference w:id="1"/></w:r></w:p>"#;
+    let comments = r#"<w:comment w:id="1" w:author="专家A"><w:p><w:r><w:t>改一下</w:t></w:r></w:p></w:comment>"#;
+    let mut doc = Document::from_bytes(package(body, comments)).unwrap();
+    assert!(doc.check_edits(&[(0, "新句。".into())]).is_ok());
+    assert!(doc.check_edits(&[(3, "x".into())]).is_err());
+
+    doc.group("AI 修复", |doc| {
+        doc.replace_paragraphs(&[(0, "新句。".into())], &tracked(), "改写")?;
+        doc.add_reply("1", "AutoPassDoc", None, "已修改")?;
+        doc.set_comments_done(&["1"], true)
+    })
+    .unwrap();
+    assert_eq!(doc.undo_label(), Some("AI 修复"));
+    assert_eq!(doc.comments.len(), 2);
+    doc.undo().unwrap();
+    assert!(!doc.is_modified());
+    assert_eq!(doc.undo().unwrap(), None);
+
+    let failed = doc.group("失败", |doc| {
+        doc.replace_paragraphs(&[(0, "新句。".into())], &tracked(), "改写")?;
+        doc.add_reply("404", "AutoPassDoc", None, "x")
+    });
+    assert!(failed.is_err());
+    assert!(!doc.is_modified(), "a failed group leaves nothing behind");
+    assert_eq!(doc.undo_label(), None);
+}

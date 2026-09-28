@@ -1,0 +1,12 @@
+//! AutoPassDoc application logic shared by the desktop shell: settings and
+//! API keys, model providers, reviewers, the AI-fix pipeline and the
+//! knowledge-base glue.
+
+pub mod error;
+pub mod fix;
+pub mod reviewers;
+pub mod secrets;
+pub mod settings;
+pub mod store;
+
+pub use error::{Error, Result};

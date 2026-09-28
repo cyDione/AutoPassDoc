@@ -291,6 +291,48 @@ impl Document {
         Ok(Some(label))
     }
 
+    /// Runs several edits as one undo step. If `f` fails, its edits are
+    /// rolled back.
+    pub fn group<T>(&mut self, label: &str, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        if self.history.in_group() {
+            return f(self);
+        }
+        self.history.begin_group(label);
+        let result = f(self);
+        let step = self.history.end_group().expect("group is open");
+        match result {
+            Ok(value) => {
+                if !step.is_empty() {
+                    self.history.push(step);
+                }
+                Ok(value)
+            }
+            Err(e) => {
+                step.revert(&mut self.package)?;
+                self.reload()?;
+                Err(e)
+            }
+        }
+    }
+
+    /// Checks that `changes` could be written back, without changing anything.
+    pub fn check_edits(&self, changes: &[(usize, String)]) -> Result<()> {
+        let doc_xml = self.required_string(DOCUMENT_PART)?;
+        let opts = EditOptions::new(EditMode::Tracked, "check");
+        let mut ids = edit::Ids(1);
+        for (index, text) in changes {
+            let p = self
+                .paragraphs
+                .get(*index)
+                .ok_or_else(|| Error::Edit(format!("段落 {index} 不存在")))?;
+            let ops = edit::ops_for(p, text)?;
+            if !ops.is_empty() {
+                edit::rewrite_paragraph(&doc_xml, p, &ops, &opts, &mut ids)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Writes new part contents as one undoable step and re-reads the
     /// document. If the result does not parse, nothing changes.
     fn commit(&mut self, label: &str, parts: Vec<(&str, String)>) -> Result<()> {
