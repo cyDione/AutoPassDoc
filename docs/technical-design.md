@@ -308,11 +308,11 @@ v0.2：四个问题都改成"是 = 好"的问法，便于决策模型校准。�
 
 ## 9. 存储
 
-- 应用数据目录：`%APPDATA%/AutoPassDoc`（Windows）/ `~/Library/Application Support/AutoPassDoc`（macOS）
-- `app.db`（SQLite）：文档记录、批注状态、审稿人、案例、模型配置、撤销历史
+- 应用数据目录：`%APPDATA%\com.autopassdoc.desktop`（Windows）/ `~/Library/Application Support/com.autopassdoc.desktop`（macOS）
+- `app.db`（SQLite）：设置、服务商与模型能力、审稿人与署名映射、修复案例、画像（撤销历史只在内存中，随文档关闭清空）
 - `kb/`：`kb.sqlite`（文档、分块、关键词索引、向量）和 `files/`（原文件副本）
 - `secrets.json`：仅在系统凭据库不可用时使用
-- 导出/导入：审稿人画像与知识库可打包为一个文件，便于换电脑（需求"单人使用"决策）
+- 换电脑：复制整个应用数据目录即可（API Key 在系统凭据库中，需要重新填写）；一键打包导出/导入尚未实现
 
 ## 10. 里程碑与第一期（M1）任务
 
