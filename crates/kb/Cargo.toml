@@ -4,3 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+docx-engine = { version = "0.1.0", path = "../docx-engine" }
+encoding_rs = "0.8.42"
+jieba-rs = "0.11.0"
+pdf-extract = "0.12.1"
+regex = "1.13.1"
+# The bundled SQLite (3.53) is compiled with FTS5 enabled.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+sha2 = "0.11.0"
+thiserror = "2.0.21"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+zip = "8.6.0"
