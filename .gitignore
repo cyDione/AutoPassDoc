@@ -3,3 +3,5 @@ node_modules/
 /ui/dist
 /testdata/generated/
 *.log
+/src-tauri/gen/schemas
+/ui/public/demo
