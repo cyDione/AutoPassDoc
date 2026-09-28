@@ -7,6 +7,7 @@ use models::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::core::{Core, RoleName};
 use crate::error::{Error, Result};
 use crate::secrets::SecretStore;
 use crate::store::{ProviderRecord, Store};
@@ -212,6 +213,132 @@ pub fn thinking(level: &str) -> Option<ThinkingLevel> {
         "medium" => Some(ThinkingLevel::Medium),
         "high" => Some(ThinkingLevel::High),
         _ => None,
+    }
+}
+
+/// Result of "test connection" for a role, as the settings screen shows it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeResult {
+    pub ok: bool,
+    pub latency_ms: u64,
+    pub summary: String,
+}
+
+fn new_provider_id(store: &Store) -> Result<String> {
+    let taken: Vec<String> = store.providers()?.into_iter().map(|p| p.id).collect();
+    Ok((1..)
+        .map(|n| format!("p{n}"))
+        .find(|id| !taken.contains(id))
+        .expect("an unused id"))
+}
+
+impl Core {
+    /// Creates or updates a provider. `api_key`: `Some` sets a new key,
+    /// `None` removes the key unless `keep_key`.
+    pub fn save_provider(
+        &self,
+        mut record: ProviderRecord,
+        api_key: Option<String>,
+        keep_key: bool,
+    ) -> Result<ProviderView> {
+        record.name = record.name.trim().to_string();
+        record.base_url = record.base_url.trim().to_string();
+        if record.base_url.is_empty() {
+            return Err(Error::Invalid("请填写接口地址（Base URL）".into()));
+        }
+        if !record.base_url.starts_with("http://") && !record.base_url.starts_with("https://") {
+            return Err(Error::Invalid(
+                "接口地址应以 http:// 或 https:// 开头".into(),
+            ));
+        }
+        let store = self.store();
+        if record.id.trim().is_empty() {
+            record.id = new_provider_id(&store)?;
+        }
+        if record.name.is_empty() {
+            record.name = record.id.clone();
+        }
+        store.upsert_provider(&record)?;
+        let name = secret_name(&record.id);
+        match api_key.map(|k| k.trim().to_string()) {
+            Some(k) if !k.is_empty() => self.secrets().set(&name, &k)?,
+            _ if keep_key => {}
+            _ => self.secrets().delete(&name)?,
+        }
+        let has_key = self.secrets().get(&name)?.is_some();
+        Ok(ProviderView { record, has_key })
+    }
+
+    /// Deletes a provider, its key and cached models, and unassigns roles
+    /// that used it.
+    pub fn delete_provider(&self, id: &str) -> Result<()> {
+        let store = self.store();
+        store.delete_provider(id)?;
+        self.secrets().delete(&secret_name(id))?;
+        let mut settings = store.settings()?;
+        let roles = &mut settings.roles;
+        for role in [
+            &mut roles.chat,
+            &mut roles.decision,
+            &mut roles.embedding,
+            &mut roles.rerank,
+        ] {
+            if role.provider_id == id {
+                *role = Default::default();
+            }
+        }
+        store.save_settings(&settings)
+    }
+
+    /// Fetches the provider's model list and caches it.
+    pub async fn fetch_models(&self, provider_id: &str) -> Result<Vec<ModelView>> {
+        let provider = provider(&self.store(), self.secrets(), provider_id)?;
+        let list = self
+            .client()
+            .list_models(&provider)
+            .await
+            .map_err(|e| Error::Invalid(format!("拉取模型列表失败：{e}")))?;
+        let store = self.store();
+        cache_models(&store, provider_id, &list)?;
+        model_views(&store, provider_id)
+    }
+
+    /// One minimal call to the model assigned to `role`.
+    pub async fn test_role(&self, role: RoleName) -> ProbeResult {
+        let target = match self.require(role) {
+            Ok(t) => t,
+            Err(e) => {
+                return ProbeResult {
+                    ok: false,
+                    latency_ms: 0,
+                    summary: e.to_string(),
+                };
+            }
+        };
+        let model_role = match role {
+            RoleName::Chat => ModelRole::Chat,
+            RoleName::Decision => ModelRole::Decision,
+            RoleName::Embedding => ModelRole::Embedding,
+            RoleName::Rerank => ModelRole::Rerank,
+        };
+        let started = std::time::Instant::now();
+        match self
+            .client()
+            .probe(&target.provider, model_role, &target.model)
+            .await
+        {
+            Ok(r) => ProbeResult {
+                ok: true,
+                latency_ms: r.latency_ms,
+                summary: r.summary,
+            },
+            Err(e) => ProbeResult {
+                ok: false,
+                latency_ms: started.elapsed().as_millis() as u64,
+                summary: e.to_string(),
+            },
+        }
     }
 }
 

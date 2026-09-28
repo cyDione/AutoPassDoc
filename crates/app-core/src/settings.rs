@@ -83,3 +83,40 @@ pub struct Settings {
     pub roles: Roles,
     pub fix: FixSettings,
 }
+
+impl Settings {
+    /// Brings values from the settings screen into their usable ranges.
+    pub fn normalized(mut self) -> Self {
+        let fix = &mut self.fix;
+        fix.threshold = if fix.threshold.is_finite() {
+            fix.threshold.clamp(0.5, 0.99)
+        } else {
+            FixSettings::default().threshold
+        };
+        fix.author = fix.author.trim().to_string();
+        if fix.author.is_empty() {
+            fix.author = FixSettings::default().author;
+        }
+        fix.kb_passages = fix.kb_passages.clamp(1, 20);
+        fix.concurrency = fix.concurrency.clamp(1, 8);
+        fix.profile_every = fix.profile_every.clamp(1, 200);
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_partial_json_and_clamps() {
+        let s: Settings =
+            serde_json::from_str(r#"{"fix": {"threshold": 1.5, "concurrency": 0, "author": " "}}"#)
+                .unwrap();
+        let s = s.normalized();
+        assert_eq!(s.fix.threshold, 0.99);
+        assert_eq!(s.fix.concurrency, 1);
+        assert_eq!(s.fix.author, "AutoPassDoc");
+        assert!(s.fix.resolve_on_apply, "missing fields keep their defaults");
+    }
+}

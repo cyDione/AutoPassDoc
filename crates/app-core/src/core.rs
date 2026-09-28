@@ -90,6 +90,12 @@ impl Core {
         self.store().settings()
     }
 
+    pub fn save_settings(&self, settings: Settings) -> Result<Settings> {
+        let settings = settings.normalized();
+        self.store().save_settings(&settings)?;
+        Ok(settings)
+    }
+
     fn role_model(settings: &Settings, role: RoleName) -> &RoleModel {
         match role {
             RoleName::Chat => &settings.roles.chat,

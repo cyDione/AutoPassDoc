@@ -254,6 +254,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 name = "autopassdoc"
 version = "0.1.0"
 dependencies = [
+ "app-core",
  "docx-engine",
  "percent-encoding",
  "serde",
@@ -262,6 +263,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "tokio",
 ]
 
 [[package]]

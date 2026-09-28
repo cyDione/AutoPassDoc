@@ -19,3 +19,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 percent-encoding = "2"
 tauri-plugin-opener = "2"
+app-core = { path = "../crates/app-core" }
+tokio = { version = "1", features = ["sync"] }

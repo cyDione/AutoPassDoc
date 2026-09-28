@@ -1,165 +1,30 @@
-//! Tauri shell: exposes the docx engine to the UI through IPC commands and
-//! serves document images through the `apd://` protocol.
+//! Tauri shell: exposes the docx engine and the application core to the UI
+//! through IPC commands and serves document images through the `apd://`
+//! protocol.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+mod ai;
+mod documents;
 
-use docx_engine::Document;
-use docx_engine::view::{BlockView, DocumentSummary};
-use serde::Serialize;
+use std::fmt::Display;
+use std::sync::Arc;
+
+use app_core::Core;
+use documents::OpenDocuments;
+use tauri::Manager;
 use tauri::http::{Response, StatusCode};
-use tauri::{Manager, State};
 
-#[derive(Default)]
-struct OpenDocuments {
-    next_id: AtomicU64,
-    docs: RwLock<HashMap<u64, Arc<OpenDocument>>>,
+/// Command result; errors are shown to the user as they are.
+pub(crate) type Res<T> = Result<T, String>;
+
+pub(crate) fn err(e: impl Display) -> String {
+    e.to_string()
 }
 
-struct OpenDocument {
-    path: PathBuf,
-    doc: RwLock<Document>,
-}
-
-impl OpenDocuments {
-    fn get(&self, id: u64) -> Result<Arc<OpenDocument>, String> {
-        self.docs
-            .read()
-            .unwrap()
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| "文档已关闭".to_string())
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Opened {
-    doc_id: u64,
-    path: String,
-    file_name: String,
-    summary: DocumentSummary,
-}
-
-#[tauri::command]
-async fn open_document(
-    path: String,
-    state: State<'_, Arc<OpenDocuments>>,
-) -> Result<Opened, String> {
-    let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let path = PathBuf::from(path);
-        if !path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("docx"))
-        {
-            return Err(
-                "目前只支持 .docx 文件。.doc 或 .wps 文件请先在 Word/WPS 中另存为 .docx。"
-                    .to_string(),
-            );
-        }
-        let doc = Document::open(&path).map_err(|e| e.to_string())?;
-        let summary = doc.summary();
-        let doc_id = state.next_id.fetch_add(1, Ordering::Relaxed) + 1;
-        let file_name = file_name(&path);
-        state.docs.write().unwrap().insert(
-            doc_id,
-            Arc::new(OpenDocument {
-                path: path.clone(),
-                doc: RwLock::new(doc),
-            }),
-        );
-        Ok(Opened {
-            doc_id,
-            path: path.to_string_lossy().into_owned(),
-            file_name,
-            summary,
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-fn get_blocks(
-    doc_id: u64,
-    start: usize,
-    end: usize,
-    state: State<'_, Arc<OpenDocuments>>,
-) -> Result<Vec<BlockView>, String> {
-    Ok(state
-        .get(doc_id)?
-        .doc
-        .read()
-        .unwrap()
-        .blocks_view(start, end))
-}
-
-/// Default "save as" path: next to the original, with a suffix, so the
-/// reviewer's original file is never overwritten by accident.
-#[tauri::command]
-fn suggested_save_path(
-    doc_id: u64,
-    state: State<'_, Arc<OpenDocuments>>,
-) -> Result<String, String> {
-    let open = state.get(doc_id)?;
-    let stem = open
-        .path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("文档");
-    Ok(open
-        .path
-        .with_file_name(format!("{stem}_AutoPassDoc.docx"))
-        .to_string_lossy()
-        .into_owned())
-}
-
-#[tauri::command]
-async fn save_document_as(
-    doc_id: u64,
-    path: String,
-    state: State<'_, Arc<OpenDocuments>>,
-) -> Result<(), String> {
-    let open = state.get(doc_id)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        open.doc
-            .write()
-            .unwrap()
-            .save(&path)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// A .docx passed on the command line, e.g. when the app is opened through
-/// "Open with" in Explorer or Finder.
-#[tauri::command]
-fn initial_file() -> Option<String> {
-    std::env::args_os()
-        .skip(1)
-        .map(PathBuf::from)
-        .find(|p| {
-            p.extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("docx"))
-        })
-        .map(|p| p.to_string_lossy().into_owned())
-}
-
-#[tauri::command]
-fn close_document(doc_id: u64, state: State<'_, Arc<OpenDocuments>>) {
-    state.docs.write().unwrap().remove(&doc_id);
-}
-
-fn file_name(path: &Path) -> String {
-    path.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default()
+/// Runs blocking work (file and database access) off the async runtime.
+pub(crate) async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Res<T> + Send + 'static,
+) -> Res<T> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(err)?
 }
 
 /// `apd://localhost/<docId>/<relId>` → image bytes from the document package.
@@ -195,18 +60,57 @@ pub fn run() {
     let documents = Arc::new(OpenDocuments::default());
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(documents)
+        .setup(|app| {
+            let dir = app.path().app_data_dir()?;
+            let core =
+                Core::open(&dir).map_err(|e| format!("无法打开数据目录 {}：{e}", dir.display()))?;
+            app.manage(Arc::new(core));
+            Ok(())
+        })
         .register_uri_scheme_protocol("apd", |ctx, request| {
             let state = ctx.app_handle().state::<Arc<OpenDocuments>>();
             serve_image(&state, request.uri().path())
         })
         .invoke_handler(tauri::generate_handler![
-            open_document,
-            get_blocks,
-            suggested_save_path,
-            save_document_as,
-            initial_file,
-            close_document
+            documents::open_document,
+            documents::get_blocks,
+            documents::suggested_save_path,
+            documents::save_document_as,
+            documents::save_document,
+            documents::initial_file,
+            documents::close_document,
+            documents::doc_state,
+            documents::document_summary,
+            documents::undo,
+            documents::redo,
+            documents::set_comment_done,
+            documents::document_authors,
+            documents::assign_author,
+            ai::fix_comment,
+            ai::fix_batch,
+            ai::apply_fix,
+            ai::reject_fix,
+            ai::list_reviewers,
+            ai::create_reviewer,
+            ai::update_reviewer,
+            ai::delete_reviewer,
+            ai::merge_reviewers,
+            ai::reviewer_profile,
+            ai::distill_profile,
+            ai::reviewer_cases,
+            ai::pre_review,
+            ai::export_dataset,
+            ai::get_settings,
+            ai::save_settings,
+            ai::list_providers,
+            ai::save_provider,
+            ai::delete_provider,
+            ai::fetch_models,
+            ai::provider_models,
+            ai::set_model_profile,
+            ai::test_role,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AutoPassDoc");
@@ -215,6 +119,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use documents::OpenDocument;
+    use docx_engine::Document;
+    use std::path::PathBuf;
 
     #[test]
     fn serves_images_from_open_documents() {
@@ -227,13 +134,11 @@ mod tests {
             },
         ))
         .unwrap();
-        state.docs.write().unwrap().insert(
-            7,
-            Arc::new(OpenDocument {
-                path: PathBuf::from("a.docx"),
-                doc: RwLock::new(doc),
-            }),
-        );
+        state
+            .docs
+            .write()
+            .unwrap()
+            .insert(7, Arc::new(OpenDocument::new(PathBuf::from("a.docx"), doc)));
 
         let ok = serve_image(&state, "/7/rIdImage1");
         assert_eq!(ok.status(), StatusCode::OK);

@@ -3,9 +3,11 @@
 //! knowledge-base glue.
 
 pub mod core;
+pub mod dataset;
 pub mod error;
 pub mod fix;
 pub mod knowledge;
+pub mod prereview;
 pub mod profiles;
 pub mod providers;
 pub mod reviewers;

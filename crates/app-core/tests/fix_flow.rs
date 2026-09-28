@@ -273,6 +273,61 @@ async fn low_confidence_needs_force_and_rejections_are_recorded() {
     core.reject_fix(&p2.id).unwrap();
     let cases = core.store().decided_cases().unwrap();
     assert_eq!(cases.last().unwrap().action, CaseAction::Rejected);
+
+    let out = dir.path().join("dataset.jsonl");
+    assert_eq!(core.export_dataset(&out).unwrap(), 2);
+    let lines: Vec<Value> = std::fs::read_to_string(&out)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["action"], "edited");
+    assert_eq!(lines[0]["reviewer"], "张处长");
+    assert_eq!(lines[1]["label"], 0.0);
+    assert!(lines[0]["state"].as_str().unwrap().contains("【修改后】"));
+}
+
+#[tokio::test]
+async fn pre_review_predicts_the_reviewers_comments() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let core = core(dir.path(), &server);
+    let doc = doc();
+    let reviewer = core.store().create_reviewer("李主任", "财政口").unwrap();
+    let paragraphs: Vec<(usize, String)> = (0..40).map(|i| (i, doc.editable_text(i))).collect();
+    let err = core.pre_review(reviewer.id, &paragraphs).await.unwrap_err();
+    assert!(err.to_string().contains("还不了解"), "{err}");
+
+    let summary = app_core::profiles::ProfileSummary {
+        summary: "关注资金测算".into(),
+        ..Default::default()
+    };
+    core.store()
+        .add_profile(reviewer.id, &serde_json::to_string(&summary).unwrap(), 3)
+        .unwrap();
+    let (index, text) = paragraphs
+        .iter()
+        .find(|(_, t)| t.chars().count() > 20)
+        .unwrap();
+    let quote: String = text.chars().take(6).collect();
+    let answer = json!({"items": [
+        {"paragraph": index, "quote": quote, "comment": "请补充测算依据", "category": "数据口径"},
+        {"paragraph": 999, "quote": "", "comment": "越界"}
+    ]});
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(chat_reply(&answer.to_string()))
+        .mount(&server)
+        .await;
+    let items = core.pre_review(reviewer.id, &paragraphs).await.unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].paragraph_index, *index);
+    assert_eq!(items[0].quote, quote);
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    let user = body["messages"][1]["content"].as_str().unwrap();
+    assert!(user.contains("关注资金测算") && user.contains(&format!("[{index}] ")));
 }
 
 #[tokio::test]
