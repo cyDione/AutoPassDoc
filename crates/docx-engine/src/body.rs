@@ -10,7 +10,7 @@ use quick_xml::events::{BytesStart, Event};
 use crate::error::{Error, Result};
 use crate::model::{
     Block, ByteSpan, Inline, Marker, MarkerKind, NumberingRef, Paragraph, Revision, Run, RunFormat,
-    Table, TableCell,
+    Table, TableCell, XmlRun,
 };
 use crate::xml::{attr, local, read_text, skip, toggle};
 
@@ -62,6 +62,20 @@ pub fn parse(xml: &str) -> Result<Body> {
         blocks,
         paragraphs: parser.paragraphs,
     })
+}
+
+/// Number of paragraph characters a fragment of run content (for example
+/// `<w:tab/>` or a whole `<mc:AlternateContent>`) produces, counted exactly
+/// as when the paragraph is read.
+pub fn fragment_chars(xml: &str) -> Result<usize> {
+    let mut parser = Parser {
+        reader: Reader::from_str(xml),
+        paragraphs: Vec::new(),
+        pending_starts: Vec::new(),
+    };
+    let mut p = ParagraphBuilder::new(0);
+    parser.paragraph_content(&mut p, true)?;
+    Ok(p.len)
 }
 
 enum ContainerSink<'a> {
@@ -301,7 +315,7 @@ impl<'a> Parser<'a> {
             p.marker(MarkerKind::CommentStart, id);
         }
         if !empty {
-            self.paragraph_content(&mut p)?;
+            self.paragraph_content(&mut p, false)?;
         }
         let span = ByteSpan {
             start,
@@ -311,12 +325,18 @@ impl<'a> Parser<'a> {
         Ok(index)
     }
 
-    fn paragraph_content(&mut self, p: &mut ParagraphBuilder) -> Result<()> {
+    /// Reads paragraph content up to `</w:p>`, or to the end of input when
+    /// `fragment` is set.
+    fn paragraph_content(&mut self, p: &mut ParagraphBuilder, fragment: bool) -> Result<()> {
         loop {
+            let start = self.pos();
             match self.next()? {
                 Event::Start(e) => match local(&e).as_str() {
                     "pPr" => self.paragraph_properties(p)?,
-                    "r" => p.format = RunFormat::default(),
+                    "r" => {
+                        p.format = RunFormat::default();
+                        p.open_run = Some((start, p.len));
+                    }
                     "rPr" => p.format = self.run_properties()?,
                     "t" | "delText" => {
                         let text = read_text(&mut self.reader, &e, PART)?;
@@ -325,12 +345,12 @@ impl<'a> Parser<'a> {
                     "ins" | "moveTo" => p.revisions.push((Revision::Insert, attr(&e, "author"))),
                     "del" | "moveFrom" => p.revisions.push((Revision::Delete, attr(&e, "author"))),
                     "drawing" | "pict" | "object" => {
-                        let rel_id = self.image_rel_id(&e)?;
+                        let rel_id = image_rel_id(&mut self.reader, &e)?;
                         p.push("\u{FFFC}", Inline::Image { rel_id });
                     }
                     "oMath" | "oMathPara" => {
                         self.skip(&e)?;
-                        p.push("〔公式〕", Inline::Text);
+                        p.push("〔公式〕", Inline::Math);
                     }
                     name if SKIPPED.contains(&name) => self.skip(&e)?,
                     // hyperlink, smartTag, sdt, sdtContent, fldSimple, AlternateContent, Choice, ...
@@ -363,12 +383,14 @@ impl<'a> Parser<'a> {
                     _ => {}
                 },
                 Event::End(e) => match e.local_name().as_ref() {
-                    "p" => return Ok(()),
+                    "p" if !fragment => return Ok(()),
+                    "r" => p.close_run(self.pos()),
                     "ins" | "moveTo" | "del" | "moveFrom" => {
                         p.revisions.pop();
                     }
                     _ => {}
                 },
+                Event::Eof if fragment => return Ok(()),
                 Event::Eof => return Err(Error::xml(PART, "unexpected end inside paragraph")),
                 _ => {}
             }
@@ -420,34 +442,34 @@ impl<'a> Parser<'a> {
             }
         }
     }
+}
 
-    /// Reads a drawing subtree and returns the relationship id of its picture.
-    fn image_rel_id(&mut self, start: &BytesStart<'_>) -> Result<Option<String>> {
-        let end = start.name().as_ref().to_string();
-        let mut depth = 0usize;
-        let mut rel_id = None;
-        let is_picture = |e: &BytesStart<'_>| matches!(local(e).as_str(), "blip" | "imagedata");
-        loop {
-            match self.next()? {
-                Event::Start(e) => {
-                    if e.name().as_ref() == end {
-                        depth += 1;
-                    } else if rel_id.is_none() && is_picture(&e) {
-                        rel_id = attr(&e, "embed").or_else(|| attr(&e, "id"));
-                    }
-                }
-                Event::Empty(e) if rel_id.is_none() && is_picture(&e) => {
+/// Reads a drawing subtree and returns the relationship id of its picture.
+fn image_rel_id(reader: &mut Reader<&[u8]>, start: &BytesStart<'_>) -> Result<Option<String>> {
+    let end = start.name().as_ref().to_string();
+    let mut depth = 0usize;
+    let mut rel_id = None;
+    let is_picture = |e: &BytesStart<'_>| matches!(local(e).as_str(), "blip" | "imagedata");
+    loop {
+        match reader.read_event().map_err(|e| Error::xml(PART, e))? {
+            Event::Start(e) => {
+                if e.name().as_ref() == end {
+                    depth += 1;
+                } else if rel_id.is_none() && is_picture(&e) {
                     rel_id = attr(&e, "embed").or_else(|| attr(&e, "id"));
                 }
-                Event::End(e) if e.name().as_ref() == end => {
-                    if depth == 0 {
-                        return Ok(rel_id);
-                    }
-                    depth -= 1;
-                }
-                Event::Eof => return Err(Error::xml(PART, "unexpected end inside drawing")),
-                _ => {}
             }
+            Event::Empty(e) if rel_id.is_none() && is_picture(&e) => {
+                rel_id = attr(&e, "embed").or_else(|| attr(&e, "id"));
+            }
+            Event::End(e) if e.name().as_ref() == end => {
+                if depth == 0 {
+                    return Ok(rel_id);
+                }
+                depth -= 1;
+            }
+            Event::Eof => return Err(Error::xml(PART, "unexpected end inside drawing")),
+            _ => {}
         }
     }
 }
@@ -465,6 +487,9 @@ struct ParagraphBuilder {
     markers: Vec<Marker>,
     format: RunFormat,
     revisions: Vec<(Revision, Option<String>)>,
+    xml_runs: Vec<XmlRun>,
+    /// Byte and char offset where the current `<w:r>` started.
+    open_run: Option<(usize, usize)>,
 }
 
 impl ParagraphBuilder {
@@ -482,6 +507,22 @@ impl ParagraphBuilder {
             markers: Vec::new(),
             format: RunFormat::default(),
             revisions: Vec::new(),
+            xml_runs: Vec::new(),
+            open_run: None,
+        }
+    }
+
+    fn close_run(&mut self, end_byte: usize) {
+        if let Some((start_byte, start)) = self.open_run.take() {
+            self.xml_runs.push(XmlRun {
+                span: ByteSpan {
+                    start: start_byte,
+                    end: end_byte,
+                },
+                start,
+                end: self.len,
+                revision: self.revisions.last().map_or(Revision::None, |r| r.0),
+            });
         }
     }
 
@@ -546,6 +587,7 @@ impl ParagraphBuilder {
             text: self.text,
             runs: self.runs,
             markers: self.markers,
+            xml_runs: self.xml_runs,
         }
     }
 }

@@ -43,11 +43,7 @@ impl Package {
         if !self.names.iter().any(|n| n == name) {
             return Ok(None);
         }
-        let mut archive = ZipArchive::new(Cursor::new(self.original.as_slice()))?;
-        let mut file = archive.by_name(name)?;
-        let mut data = Vec::with_capacity(file.size() as usize);
-        file.read_to_end(&mut data)?;
-        Ok(Some(data))
+        self.original_part(name)
     }
 
     pub fn required_part(&self, name: &str) -> Result<Vec<u8>> {
@@ -55,11 +51,36 @@ impl Package {
             .ok_or_else(|| Error::MissingPart(name.to_string()))
     }
 
-    pub fn set_part(&mut self, name: &str, data: Vec<u8>) {
-        if !self.names.iter().any(|n| n == name) && !self.added.iter().any(|n| n == name) {
+    /// Sets a part's content. Content equal to the original un-marks the part,
+    /// so an undone edit is copied verbatim again on save.
+    pub fn set_part(&mut self, name: &str, data: Vec<u8>) -> Result<()> {
+        if self.names.iter().any(|n| n == name) {
+            if self.original_part(name)?.is_some_and(|o| o == data) {
+                self.replaced.remove(name);
+                return Ok(());
+            }
+        } else if !self.added.iter().any(|n| n == name) {
             self.added.push(name.to_string());
         }
         self.replaced.insert(name.to_string(), data);
+        Ok(())
+    }
+
+    /// Removes a part added through [`Package::set_part`], or reverts a
+    /// replaced original part.
+    pub fn remove_part(&mut self, name: &str) {
+        self.replaced.remove(name);
+        self.added.retain(|n| n != name);
+    }
+
+    fn original_part(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        let mut archive = ZipArchive::new(Cursor::new(self.original.as_slice()))?;
+        let Ok(mut file) = archive.by_name(name) else {
+            return Ok(None);
+        };
+        let mut data = Vec::with_capacity(file.size() as usize);
+        file.read_to_end(&mut data)?;
+        Ok(Some(data))
     }
 
     pub fn is_modified(&self) -> bool {

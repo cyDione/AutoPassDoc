@@ -31,7 +31,8 @@ export interface CommentView {
 export type Inline =
   | { type: "text" }
   | { type: "image"; rel_id: string | null }
-  | { type: "note"; id: string };
+  | { type: "note"; id: string }
+  | { type: "math" };
 
 export interface SpanView {
   text: string;

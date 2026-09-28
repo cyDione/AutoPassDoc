@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 quick-xml = "0.42.0"
 serde = { version = "1.0.229", features = ["derive"] }
+similar = "2"
 thiserror = "2.0.21"
 zip = "8.6.0"
 

@@ -12,6 +12,9 @@ pub enum Error {
     MissingPart(String),
     #[error("{0}")]
     Invalid(String),
+    /// An edit that cannot be written back safely; the document is unchanged.
+    #[error("{0}")]
+    Edit(String),
 }
 
 impl Error {

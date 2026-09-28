@@ -160,7 +160,7 @@ fn saving_without_edits_keeps_every_part_identical() {
 fn save_writes_file_atomically() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("报告_AutoPassDoc.docx");
-    let doc = Document::from_bytes(large()).unwrap();
+    let mut doc = Document::from_bytes(large()).unwrap();
     doc.save(&path).unwrap();
     assert_eq!(
         std::fs::read_dir(dir.path()).unwrap().count(),

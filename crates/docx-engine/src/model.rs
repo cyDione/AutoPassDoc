@@ -43,6 +43,8 @@ pub enum Inline {
     Note {
         id: String,
     },
+    /// An equation, shown as a placeholder.
+    Math,
 }
 
 /// A contiguous piece of paragraph text with one format and revision state.
@@ -70,6 +72,16 @@ pub struct Marker {
     pub id: String,
 }
 
+/// A `<w:r>` element: its bytes in `word/document.xml` and the paragraph
+/// characters it produces. Edits rewrite runs through these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct XmlRun {
+    pub span: ByteSpan,
+    pub start: usize,
+    pub end: usize,
+    pub revision: Revision,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NumberingRef {
     pub num_id: u32,
@@ -90,6 +102,7 @@ pub struct Paragraph {
     pub text: String,
     pub runs: Vec<Run>,
     pub markers: Vec<Marker>,
+    pub xml_runs: Vec<XmlRun>,
 }
 
 impl Paragraph {

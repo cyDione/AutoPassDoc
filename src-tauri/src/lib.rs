@@ -20,7 +20,7 @@ struct OpenDocuments {
 
 struct OpenDocument {
     path: PathBuf,
-    doc: Document,
+    doc: RwLock<Document>,
 }
 
 impl OpenDocuments {
@@ -69,7 +69,7 @@ async fn open_document(
             doc_id,
             Arc::new(OpenDocument {
                 path: path.clone(),
-                doc,
+                doc: RwLock::new(doc),
             }),
         );
         Ok(Opened {
@@ -90,7 +90,12 @@ fn get_blocks(
     end: usize,
     state: State<'_, Arc<OpenDocuments>>,
 ) -> Result<Vec<BlockView>, String> {
-    Ok(state.get(doc_id)?.doc.blocks_view(start, end))
+    Ok(state
+        .get(doc_id)?
+        .doc
+        .read()
+        .unwrap()
+        .blocks_view(start, end))
 }
 
 /// Default "save as" path: next to the original, with a suffix, so the
@@ -120,9 +125,15 @@ async fn save_document_as(
     state: State<'_, Arc<OpenDocuments>>,
 ) -> Result<(), String> {
     let open = state.get(doc_id)?;
-    tauri::async_runtime::spawn_blocking(move || open.doc.save(&path).map_err(|e| e.to_string()))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        open.doc
+            .write()
+            .unwrap()
+            .save(&path)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// A .docx passed on the command line, e.g. when the app is opened through
@@ -168,7 +179,8 @@ fn serve_image(state: &OpenDocuments, uri_path: &str) -> Response<Vec<u8>> {
     let Some(open) = doc_id.parse().ok().and_then(|id| state.get(id).ok()) else {
         return not_found();
     };
-    match open.doc.image(rel_id) {
+    let image = open.doc.read().unwrap().image(rel_id);
+    match image {
         Ok(Some((bytes, mime))) => Response::builder()
             .header("Content-Type", mime)
             .header("Cache-Control", "max-age=31536000, immutable")
@@ -219,7 +231,7 @@ mod tests {
             7,
             Arc::new(OpenDocument {
                 path: PathBuf::from("a.docx"),
-                doc,
+                doc: RwLock::new(doc),
             }),
         );
 
