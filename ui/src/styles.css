@@ -56,6 +56,40 @@
   color-scheme: dark;
 }
 
+/* Word theme: Office neutrals, Word blue title bar and a white page on a grey canvas. */
+:root[data-theme="word"] {
+  --bg: #f3f2f1;
+  --sidebar: #faf9f8;
+  --surface: #ffffff;
+  --surface-2: #f3f2f1;
+  --hover: rgba(50, 49, 48, 0.06);
+  --active: rgba(43, 87, 154, 0.1);
+  --border: #e1dfdd;
+  --border-strong: #c8c6c4;
+  --text: #323130;
+  --text-2: #605e5c;
+  --text-3: #8a8886;
+  --accent: #2b579a;
+  --accent-soft: rgba(43, 87, 154, 0.14);
+  --comment: rgba(255, 213, 79, 0.28);
+  --comment-underline: rgba(212, 160, 23, 0.8);
+  --comment-active: rgba(255, 196, 0, 0.45);
+  --ins: #2b579a;
+  --ins-bg: transparent;
+  --del: #c4314b;
+  --positive: #107c10;
+  --shadow: 0 1.6px 3.6px rgba(0, 0, 0, 0.13), 0 0.3px 0.9px rgba(0, 0, 0, 0.11);
+  --topbar-bg: #2b579a;
+  --topbar-text: #ffffff;
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", -apple-system,
+    "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  --font-doc: "DengXian", "等线", "SimSun", "宋体", "Songti SC", "Noto Serif CJK SC", serif;
+  --font-heading: "DengXian", "等线", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  --radius: 4px;
+  --radius-sm: 4px;
+  color-scheme: light;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -321,6 +355,8 @@ button {
 .topbar {
   height: 52px;
   flex: none;
+  background: var(--topbar-bg, transparent);
+  color: var(--topbar-text, inherit);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -854,4 +890,83 @@ button {
 .toast.error {
   background: var(--del);
   color: #fff;
+}
+
+/* ---------- Word theme specifics ---------- */
+
+:root[data-theme="word"] .topbar {
+  border-bottom-color: transparent;
+}
+
+:root[data-theme="word"] .topbar .title .meta {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+:root[data-theme="word"] .topbar .icon-btn {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+:root[data-theme="word"] .topbar .icon-btn:hover,
+:root[data-theme="word"] .topbar .icon-btn.on {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+:root[data-theme="word"] .topbar .btn {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.35);
+  color: #fff;
+}
+
+:root[data-theme="word"] .topbar .btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+:root[data-theme="word"] .btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* The page: one white sheet behind all blocks. */
+.doc-canvas {
+  position: relative;
+}
+
+:root[data-theme="word"] .doc-canvas::before {
+  content: "";
+  position: absolute;
+  top: 20px;
+  bottom: 60px;
+  left: 50%;
+  width: min(820px, calc(100% - 32px));
+  transform: translateX(-50%);
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+:root[data-theme="word"] .doc-p {
+  font-size: 16px;
+  line-height: 1.85;
+}
+
+:root[data-theme="word"] .doc-h {
+  color: #1f3864;
+}
+
+:root[data-theme="word"] .doc-h.l0 {
+  color: #2b579a;
+}
+
+:root[data-theme="word"] .rev-ins {
+  text-decoration: underline;
+}
+
+:root[data-theme="word"] .comment-card {
+  border-left: 3px solid var(--border);
+}
+
+:root[data-theme="word"] .comment-card.active {
+  border-color: var(--border);
+  border-left-color: var(--accent);
 }

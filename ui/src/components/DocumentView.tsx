@@ -123,7 +123,7 @@ export const DocumentView = memo(function DocumentView({
 
   return (
     <div ref={scrollRef} className="doc-scroll scroll">
-      <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+      <div className="doc-canvas" style={{ height: virtualizer.getTotalSize() }}>
         {items.map((item) => {
           const block = cache.current.get(item.index);
           return (

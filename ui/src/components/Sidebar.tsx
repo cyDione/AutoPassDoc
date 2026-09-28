@@ -1,9 +1,9 @@
 import { memo, useEffect, useRef } from "react";
-import { FileText, FolderOpen, Monitor, Moon, PanelLeftClose, Sun } from "lucide-react";
+import { FileText, FolderOpen, Monitor, Moon, PanelLeftClose, Sun, Type } from "lucide-react";
 import type { OpenedDoc, OutlineItem } from "../types";
 import { formatChars } from "../util";
 
-export type Theme = "light" | "dark" | "system";
+export type Theme = "light" | "dark" | "word" | "system";
 
 interface Props {
   doc: OpenedDoc | null;
@@ -83,6 +83,7 @@ export const Sidebar = memo(function Sidebar({
           [
             ["light", Sun, "浅色"],
             ["dark", Moon, "深色"],
+            ["word", Type, "Word 配色"],
             ["system", Monitor, "跟随系统"],
           ] as const
         ).map(([key, Icon, label]) => (
