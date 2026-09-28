@@ -1,6 +1,8 @@
 # AutoPassDoc 技术设计
 
-> 版本：v0.1（2026-09-28）　对应需求：[requirements.md](requirements.md) v1.0
+> 版本：v0.2（2026-09-28）　对应需求：[requirements.md](requirements.md) v1.0
+>
+> v0.2 按实际实现更新：知识库改用 SQLite FTS5 + 向量（不再用 Tantivy/LanceDB），本地小模型改为通过本地 OpenAI 兼容服务接入（ONNX 内嵌推理未实现），新增 Word 配色主题、按审稿人预审和评判数据导出。实现状态见第 12 节。
 
 ## 1. 总体架构
 
@@ -11,14 +13,14 @@
                                         │ Tauri IPC（命令 + 事件，按需分段传输）
 ┌───────────────────────────────────────┴──── Rust 后端 ───────────────────────────────────────┐
 │  app（Tauri 命令层）                                                                          │
-│    ├─ core      修复流程编排 · 审稿人画像 · 撤销栈 · SQLite 存储                               │
-│    ├─ docx      .docx 解析 · 文档模型 · 批注 · 修订写回 · 保真保存                             │
-│    ├─ kb        资料解析 · 结构化分块 · Tantivy 全文索引 · LanceDB 向量索引 · 混合检索        │
-│    └─ models    模型适配层：Chat / Decision / Embedding / Rerank，远程 BYOK + 本地 ONNX         │
+│    ├─ app-core  修复流程编排 · 审稿人画像 · 预审 · SQLite 存储 · 密钥                           │
+│    ├─ docx-engine .docx 解析 · 文档模型 · 批注 · 修订写回 · 撤销 · 保真保存                     │
+│    ├─ kb        资料解析 · 结构化分块 · SQLite FTS5（jieba）· 向量检索 · RRF 混合检索         │
+│    └─ models    模型适配层：Chat / Decision / Embedding / Rerank，远程或本地服务，均为 BYOK     │
 └──────────────────────────────────────────────────────────────────────────────────────────────┘
-          │ HTTPS（BYOK）                                   │ 本地推理
-   OpenAI 兼容 / Anthropic / OpenRouter /            ONNX Runtime（DirectML / CoreML / CPU）
-   Cloudflare Workers AI（Jev）/ Ollama 等            bge-m3 · bge-reranker-v2-m3 · Laya
+          │ HTTPS（BYOK）                                   │ 本机 HTTP
+   OpenAI 兼容 / Anthropic / OpenRouter /            Ollama / Xinference / LM Studio / vLLM 等
+   Jev（systemone 接口）/ 网关                        bge-m3 · bge-reranker-v2-m3 · Laya
 ```
 
 **选型理由**
@@ -29,7 +31,7 @@
 | Rust 后端做文档引擎 | 22 万字文档的解析、diff、检索都在 Rust 完成，前端只负责显示 |
 | React + TS | 生态成熟，虚拟列表、diff 展示组件现成 |
 | SQLite | 单人本地使用，零运维，一个文件便于导出/备份 |
-| ONNX Runtime | 小模型可嵌入安装包本地跑，不依赖 Python；Windows 用 DirectML 调任意显卡 |
+| 本地 OpenAI 兼容服务 | 小模型用 Ollama、Xinference 等在本机运行，软件按普通服务商接入，不把推理运行时打进安装包 |
 
 ## 2. 仓库结构
 
@@ -40,13 +42,13 @@ AutoPassDoc/
 │  ├─ docx-engine/       .docx 解析、文档模型、批注、修订写回
 │  ├─ kb/                知识库：解析、分块、索引、检索
 │  ├─ models/            模型适配层与本地推理
-│  └─ core/              修复流程、审稿人画像、存储、撤销
+│  └─ app-core/          修复流程、审稿人画像、预审、存储、密钥
 ├─ ui/                   前端
-├─ testdata/             测试文档（含自动生成的 22 万字大文档）
+（测试文档由 docx-engine 的 testgen 模块按需生成，含 22 万字大文档）
 └─ docs/                 需求、设计文档
 ```
 
-Rust 部分用 Cargo workspace，四个 crate 相互独立，均可脱离 UI 单独测试。
+Rust 部分用 Cargo workspace，各 crate 均可脱离 UI 单独测试。
 
 ## 3. 文档引擎（docx-engine）
 
@@ -140,6 +142,7 @@ AI 修改应用时，先对"原文片段 ↔ 新文本"做**字级 diff**（中�
 - 左侧可折叠侧边栏：打开文档、当前文档、大纲；中间正文阅读栏；右侧批注面板（后续承载 AI 修复）
 - 界面文字用系统无衬线字体，正文用宋体类衬线字体，标题用黑体类字体
 - 批注在正文中以浅黄底色加下划线标出，选中时加深并闪烁定位
+- 另有 **Word 配色**主题（用户 2026-09-28 要求）：蓝色标题栏、灰色画布上的白色页面、Word 默认标题配色，习惯 Word 的用户看着更熟悉
 
 ## 5. 模型适配层（models）
 
@@ -181,7 +184,7 @@ ModelProfile {
 }
 ```
 
-- **来源优先级**：接口返回 > 内置已知模型表 > 用户手动填写。
+- **来源优先级**：用户手动填写 > 接口返回 > 内置已知模型表 > 默认值。用户改过的值在重新拉取模型列表后仍保留。
 - **思考强度**：UI 只显示该模型支持的档位；适配层把统一的档位映射到各家参数（如 `reasoning_effort`、`reasoning.effort`、思考预算、`enable_thinking`）。
 - **上下文预算**：组装提示词时按优先级填充，直到占满上下文的 70%（其余留给输出）：
   1. 系统指令 + 批注 + 被批注原文（必须）
@@ -191,15 +194,21 @@ ModelProfile {
   5. 该审稿人的相似历史案例
   6. 所在章节的更多上下文
 
-### 5.4 本地推理（需求 M-5 ~ M-7）
+### 5.4 本地小模型（需求 M-5 ~ M-7）
 
-- 使用 `ort`（ONNX Runtime 的 Rust 绑定）+ `tokenizers`，Windows 用 DirectML（任意显卡）、macOS 用 CoreML，无显卡回退 CPU。
-- 模型不打进安装包，在"模型管理"页按需下载（提供 int8 量化版以减小体积和内存），显示大小与加速状态。
-- Laya 需先从 safetensors 导出 ONNX；此步骤在我们这边完成，发布导出好的文件。
+实际实现与 v0.1 设计不同：**没有把 ONNX Runtime 内嵌进软件**，小模型通过本机运行的 OpenAI 兼容服务接入，和远程服务商走同一套代码。
+
+| 模型 | 推荐的本地运行方式 | 在软件里怎么配 |
+|---|---|---|
+| bge-m3（向量） | Ollama（`ollama pull bge-m3`）、Xinference、LM Studio | 服务商类型选 Ollama 或 OpenAI 兼容，地址填 `http://localhost:11434` 等 |
+| bge-reranker-v2-m3（重排） | Xinference、vLLM、text-embeddings-inference（提供 `/rerank` 接口） | OpenAI 兼容，重排路径按服务填写（默认 `rerank`） |
+| Laya（决策） | 需要一个实现 Jev `systemone` 接口的本地服务；目前没有现成的 | 决策模型也可以改用"聊天模型评判"模式，用本地大模型回答同样的问题 |
+
+原因：ONNX 内嵌需要在 Windows/macOS 各自打包推理库和模型，体积大；本地服务方案零额外代码，用户已有 Ollama 时开箱即用。**ONNX 内嵌推理和 Laya 本地运行都没有实现，也没有测试**，如以后确有需要再做。
 
 ### 5.5 Key 安全
 
-API Key 通过 `keyring` crate 存入 Windows 凭据管理器 / macOS 钥匙串，SQLite 中只存引用。
+API Key 通过 `keyring` crate 存入 Windows 凭据管理器 / macOS 钥匙串，SQLite 中只存引用。系统凭据库不可用时（以及 Linux 开发环境），退回到数据目录下仅当前用户可读的 `secrets.json`。Key 不会出现在日志、导出数据和错误信息中。
 
 ## 6. AI 修复流程（core）
 
