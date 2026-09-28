@@ -60,8 +60,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: ui/pnpm-lock.yaml
       - run: pnpm --dir ui install --frozen-lockfile
-      - name: Engine tests
-        run: cargo test -p docx-engine
+      - name: Tests
+        run: cargo test --workspace
       - name: Build installer
         working-directory: src-tauri
         run: ../ui/node_modules/.bin/tauri build --bundles nsis msi
@@ -71,4 +71,31 @@ jobs:
           path: |
             target/release/bundle/nsis/*.exe
             target/release/bundle/msi/*.msi
+          if-no-files-found: error
+
+  macos:
+    name: macOS app (unsigned)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - run: pnpm --dir ui install --frozen-lockfile
+      - name: Tests
+        run: cargo test --workspace
+      - name: Build app
+        working-directory: src-tauri
+        run: ../ui/node_modules/.bin/tauri build --bundles app dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AutoPassDoc-macos
+          path: target/release/bundle/dmg/*.dmg
           if-no-files-found: error
