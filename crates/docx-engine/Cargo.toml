@@ -1,0 +1,15 @@
+[package]
+name = "docx-engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+quick-xml = "0.42.0"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+zip = "8.6.0"
+
+[dev-dependencies]
+serde_json = "1.0.151"
+tempfile = "3.27.0"
+zip = "8.6.0"
