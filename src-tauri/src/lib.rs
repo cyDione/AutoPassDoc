@@ -199,3 +199,41 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running AutoPassDoc");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serves_images_from_open_documents() {
+        let state = OpenDocuments::default();
+        let doc = Document::from_bytes(docx_engine::testgen::generate(
+            &docx_engine::testgen::Spec {
+                target_chars: 2_000,
+                comments: 3,
+                seed: 1,
+            },
+        ))
+        .unwrap();
+        state.docs.write().unwrap().insert(
+            7,
+            Arc::new(OpenDocument {
+                path: PathBuf::from("a.docx"),
+                doc,
+            }),
+        );
+
+        let ok = serve_image(&state, "/7/rIdImage1");
+        assert_eq!(ok.status(), StatusCode::OK);
+        assert_eq!(ok.headers()["Content-Type"], "image/png");
+        assert!(ok.body().starts_with(b"\x89PNG"));
+
+        for missing in ["/7/rIdNope", "/8/rIdImage1", "/garbage", ""] {
+            assert_eq!(
+                serve_image(&state, missing).status(),
+                StatusCode::NOT_FOUND,
+                "{missing}"
+            );
+        }
+    }
+}
