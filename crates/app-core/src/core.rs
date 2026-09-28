@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, MutexGuard};
 
 use models::{Client, ModelProfile, Provider, ThinkingLevel};
@@ -50,6 +51,10 @@ pub struct Core {
     secrets: SecretStore,
     client: Client,
     pub(crate) proposals: Mutex<HashMap<String, Stored>>,
+    /// Opened on first use.
+    pub(crate) kb: Mutex<Option<kb::KnowledgeBase>>,
+    /// Set while chunks are being embedded.
+    pub(crate) embedding: AtomicBool,
 }
 
 impl Core {
@@ -67,6 +72,8 @@ impl Core {
             secrets: SecretStore::new(data_dir),
             client,
             proposals: Mutex::new(HashMap::new()),
+            kb: Mutex::new(None),
+            embedding: AtomicBool::new(false),
         })
     }
 

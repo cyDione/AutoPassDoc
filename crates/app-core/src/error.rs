@@ -4,6 +4,8 @@ use thiserror::Error;
 pub enum Error {
     #[error("{0}")]
     Document(#[from] docx_engine::Error),
+    #[error("{0}")]
+    Kb(#[from] kb::Error),
     #[error("数据库错误: {0}")]
     Database(#[from] rusqlite::Error),
     #[error("文件读写失败: {0}")]

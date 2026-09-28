@@ -4,6 +4,7 @@
 
 mod ai;
 mod documents;
+mod knowledge;
 
 use std::fmt::Display;
 use std::sync::Arc;
@@ -111,6 +112,13 @@ pub fn run() {
             ai::provider_models,
             ai::set_model_profile,
             ai::test_role,
+            knowledge::kb_documents,
+            knowledge::kb_stats,
+            knowledge::kb_import,
+            knowledge::kb_remove,
+            knowledge::kb_update_meta,
+            knowledge::kb_search,
+            knowledge::kb_embed,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AutoPassDoc");

@@ -7,6 +7,7 @@ description = "AutoPassDoc application logic: settings, reviewers, AI fixes, kno
 [dependencies]
 docx-engine = { path = "../docx-engine" }
 models = { version = "0.1.0", path = "../models" }
+kb = { path = "../kb" }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
