@@ -64,11 +64,14 @@ version = "0.1.0"
 dependencies = [
  "docx-engine",
  "keyring",
+ "models",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]

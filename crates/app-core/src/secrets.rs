@@ -9,8 +9,6 @@ use std::sync::Mutex;
 
 use crate::error::{Error, Result};
 
-const SERVICE: &str = "AutoPassDoc";
-
 pub struct SecretStore {
     file: PathBuf,
     lock: Mutex<()>,
@@ -91,7 +89,7 @@ fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
 
 #[cfg(any(windows, target_os = "macos"))]
 mod native {
-    use super::SERVICE;
+    const SERVICE: &str = "AutoPassDoc";
 
     fn entry(name: &str) -> Option<keyring::Entry> {
         keyring::Entry::new(SERVICE, name).ok()
@@ -115,7 +113,6 @@ mod native {
 #[cfg(not(any(windows, target_os = "macos")))]
 mod native {
     pub fn set(_: &str, _: &str) -> Result<(), ()> {
-        let _ = super::SERVICE;
         Err(())
     }
 

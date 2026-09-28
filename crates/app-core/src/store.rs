@@ -176,6 +176,9 @@ pub struct Profile {
     pub created_at: i64,
 }
 
+/// A cached model: (model id, fetched info JSON, manual profile JSON).
+pub type CachedModel = (String, Option<String>, Option<String>);
+
 pub struct Store {
     conn: Connection,
 }
@@ -275,11 +278,8 @@ impl Store {
         Ok(())
     }
 
-    /// Cached model list of a provider: (model id, fetched info JSON, manual profile JSON).
-    pub fn provider_models(
-        &self,
-        provider_id: &str,
-    ) -> Result<Vec<(String, Option<String>, Option<String>)>> {
+    /// Cached model list of a provider.
+    pub fn provider_models(&self, provider_id: &str) -> Result<Vec<CachedModel>> {
         let mut stmt = self.conn.prepare(
             "SELECT model_id, info, manual FROM provider_models WHERE provider_id = ?1 ORDER BY model_id",
         )?;

@@ -107,7 +107,7 @@ pub fn build(p: &PromptInput<'_>, budget: usize) -> (String, Included) {
     let mut used =
         estimate_tokens(SYSTEM) + estimate_tokens(&required) + estimate_tokens(&target) + 64;
     let mut included = Included::default();
-    let mut fits = |text: &str, used: &mut usize| {
+    let fits = |text: &str, used: &mut usize| {
         let t = estimate_tokens(text);
         if *used + t <= budget {
             *used += t;
