@@ -1,4 +1,31 @@
-import type { BlockView, OpenedDoc, Summary } from "./types";
+import type {
+  AuthorView,
+  BlockView,
+  Case,
+  DocState,
+  EditOutcome,
+  FixProgress,
+  FixProposal,
+  KbDocument,
+  KbHit,
+  KbImportReport,
+  KbMeta,
+  KbProgress,
+  KbStats,
+  ModelProfileOverride,
+  ModelRoleName,
+  ModelView,
+  OpenedDoc,
+  PreReviewItem,
+  ProbeResult,
+  ProviderView,
+  Reviewer,
+  ReviewerProfile,
+  Settings,
+  Summary,
+} from "./types";
+
+export type Unsubscribe = () => void;
 
 /** Everything the UI needs from the Rust side. */
 export interface Backend {
@@ -14,6 +41,82 @@ export interface Backend {
   imageUrl(docId: number, relId: string): string;
   /** Subscribes to files dropped on the window; returns an unsubscribe function. */
   onFileDrop(handler: (paths: string[]) => void, onHover: (hovering: boolean) => void): () => void;
+
+  // Editing
+  docState(docId: number): Promise<DocState>;
+  summary(docId: number): Promise<Summary>;
+  undo(docId: number): Promise<EditOutcome>;
+  redo(docId: number): Promise<EditOutcome>;
+  /** Saves to the path of the last save; rejects if the document was never saved. */
+  save(docId: number): Promise<DocState>;
+  setCommentDone(docId: number, commentId: string, done: boolean): Promise<EditOutcome>;
+
+  // AI fixes
+  /** Runs one fix; progress also arrives through onFixProgress. */
+  fixComment(docId: number, commentId: string): Promise<FixProposal>;
+  /** Starts fixes for several comments; each result arrives through onFixProgress. */
+  fixBatch(docId: number, commentIds: string[]): Promise<void>;
+  onFixProgress(handler: (p: FixProgress) => void): Unsubscribe;
+  /** Applies a proposal, optionally with user-edited paragraph texts. `force` applies below the threshold. */
+  applyFix(docId: number, proposalId: string, edited: string[] | null, force: boolean): Promise<EditOutcome>;
+  rejectFix(proposalId: string): Promise<void>;
+
+  // Reviewers
+  documentAuthors(docId: number): Promise<AuthorView[]>;
+  /**
+   * Maps a comment signature to an existing reviewer (`reviewerId`), a new one
+   * (`newReviewer`), or clears it (both null). `writeBack` also renames the
+   * author inside the document.
+   */
+  assignAuthor(
+    docId: number,
+    author: string,
+    initials: string,
+    reviewerId: number | null,
+    newReviewer: string | null,
+    writeBack: boolean,
+  ): Promise<{ authors: AuthorView[]; outcome: EditOutcome | null }>;
+  reviewers(): Promise<Reviewer[]>;
+  createReviewer(name: string, note: string): Promise<Reviewer>;
+  updateReviewer(id: number, name: string, note: string, threshold: number | null): Promise<Reviewer>;
+  deleteReviewer(id: number): Promise<void>;
+  mergeReviewers(from: number, into: number): Promise<void>;
+  reviewerProfile(id: number): Promise<ReviewerProfile | null>;
+  /** Re-distils the reviewer's profile from their cases now. */
+  distillProfile(id: number): Promise<ReviewerProfile>;
+  reviewerCases(id: number): Promise<Case[]>;
+  /** Comments this reviewer would likely make on paragraphs start..end (exclusive). */
+  preReview(docId: number, reviewerId: number, start: number, end: number): Promise<PreReviewItem[]>;
+  /** Asks where to save and writes the decided cases as JSONL for judge training; `null` if cancelled. */
+  exportDataset(): Promise<string | null>;
+
+  // Settings and models
+  settings(): Promise<Settings>;
+  saveSettings(settings: Settings): Promise<Settings>;
+  providers(): Promise<ProviderView[]>;
+  /** `apiKey`: a new key, `null` to remove the key, `undefined` to keep it. */
+  saveProvider(provider: Omit<ProviderView, "hasKey">, apiKey?: string | null): Promise<ProviderView>;
+  deleteProvider(id: string): Promise<void>;
+  /** Fetches the provider's model list from its API and caches it. */
+  fetchModels(providerId: string): Promise<ModelView[]>;
+  /** The cached model list. */
+  providerModels(providerId: string): Promise<ModelView[]>;
+  setModelProfile(providerId: string, modelId: string, profile: ModelProfileOverride | null): Promise<ModelView>;
+  testRole(role: ModelRoleName): Promise<ProbeResult>;
+
+  // Knowledge base
+  kbDocuments(): Promise<KbDocument[]>;
+  kbStats(): Promise<KbStats>;
+  /** Imports the given files, or asks for files when `paths` is omitted. */
+  kbImport(paths?: string[]): Promise<KbImportReport[]>;
+  kbRemove(docId: number): Promise<void>;
+  kbUpdateMeta(docId: number, meta: KbMeta): Promise<KbDocument>;
+  kbSearch(text: string): Promise<KbHit[]>;
+  /** Starts embedding chunks that lack vectors; progress arrives through onKbProgress. */
+  kbEmbed(): Promise<void>;
+  onKbProgress(handler: (p: KbProgress) => void): Unsubscribe;
+  /** Opens a file with the system's default app. */
+  openPath(path: string): Promise<void>;
 }
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -21,7 +124,19 @@ const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
 async function tauriBackend(): Promise<Backend> {
   const { invoke, convertFileSrc } = await import("@tauri-apps/api/core");
   const dialog = await import("@tauri-apps/plugin-dialog");
+  const opener = await import("@tauri-apps/plugin-opener");
   const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+  const { listen } = await import("@tauri-apps/api/event");
+
+  const subscribe = <T,>(event: string, handler: (payload: T) => void): Unsubscribe => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    listen<T>(event, (e) => handler(e.payload)).then((fn) => (cancelled ? fn() : (unlisten = fn)));
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  };
 
   const open = (path: string) => invoke<OpenedDoc>("open_document", { path });
 
@@ -43,7 +158,7 @@ async function tauriBackend(): Promise<Backend> {
         filters: [{ name: "Word 文档", extensions: ["docx"] }],
       });
       if (!path) return null;
-      await invoke("save_document_as", { docId, path });
+      await invoke<DocState>("save_document_as", { docId, path });
       return path;
     },
     close: (docId) => invoke("close_document", { docId }),
@@ -68,6 +183,74 @@ async function tauriBackend(): Promise<Backend> {
         unlisten?.();
       };
     },
+
+    docState: (docId) => invoke("doc_state", { docId }),
+    summary: (docId) => invoke("document_summary", { docId }),
+    undo: (docId) => invoke("undo", { docId }),
+    redo: (docId) => invoke("redo", { docId }),
+    save: (docId) => invoke("save_document", { docId }),
+    setCommentDone: (docId, commentId, done) => invoke("set_comment_done", { docId, commentId, done }),
+
+    fixComment: (docId, commentId) => invoke("fix_comment", { docId, commentId }),
+    fixBatch: (docId, commentIds) => invoke("fix_batch", { docId, commentIds }),
+    onFixProgress: (handler) => subscribe<FixProgress>("fix-progress", handler),
+    applyFix: (docId, proposalId, edited, force) => invoke("apply_fix", { docId, proposalId, edited, force }),
+    rejectFix: (proposalId) => invoke("reject_fix", { proposalId }),
+
+    documentAuthors: (docId) => invoke("document_authors", { docId }),
+    assignAuthor: (docId, author, initials, reviewerId, newReviewer, writeBack) =>
+      invoke("assign_author", { docId, author, initials, reviewerId, newReviewer, writeBack }),
+    reviewers: () => invoke("list_reviewers"),
+    createReviewer: (name, note) => invoke("create_reviewer", { name, note }),
+    updateReviewer: (id, name, note, threshold) => invoke("update_reviewer", { id, name, note, threshold }),
+    deleteReviewer: (id) => invoke("delete_reviewer", { id }),
+    mergeReviewers: (from, into) => invoke("merge_reviewers", { from, into }),
+    reviewerProfile: (id) => invoke("reviewer_profile", { id }),
+    distillProfile: (id) => invoke("distill_profile", { id }),
+    reviewerCases: (id) => invoke("reviewer_cases", { id }),
+    preReview: (docId, reviewerId, start, end) => invoke("pre_review", { docId, reviewerId, start, end }),
+    async exportDataset() {
+      const path = await dialog.save({
+        defaultPath: "autopassdoc-judge-dataset.jsonl",
+        filters: [{ name: "JSON Lines", extensions: ["jsonl"] }],
+      });
+      if (!path) return null;
+      await invoke("export_dataset", { path });
+      return path;
+    },
+
+    settings: () => invoke("get_settings"),
+    saveSettings: (settings) => invoke("save_settings", { settings }),
+    providers: () => invoke("list_providers"),
+    saveProvider: (provider, apiKey) =>
+      invoke("save_provider", { provider, apiKey: apiKey ?? null, keepKey: apiKey === undefined }),
+    deleteProvider: (id) => invoke("delete_provider", { id }),
+    fetchModels: (providerId) => invoke("fetch_models", { providerId }),
+    providerModels: (providerId) => invoke("provider_models", { providerId }),
+    setModelProfile: (providerId, modelId, profile) => invoke("set_model_profile", { providerId, modelId, profile }),
+    testRole: (role) => invoke("test_role", { role }),
+
+    kbDocuments: () => invoke("kb_documents"),
+    kbStats: () => invoke("kb_stats"),
+    async kbImport(paths) {
+      let files = paths;
+      if (!files) {
+        const picked = await dialog.open({
+          multiple: true,
+          directory: false,
+          filters: [{ name: "资料文件", extensions: ["docx", "pdf", "txt", "md"] }],
+        });
+        if (!picked) return [];
+        files = Array.isArray(picked) ? picked : [picked];
+      }
+      return invoke<KbImportReport[]>("kb_import", { paths: files });
+    },
+    kbRemove: (docId) => invoke("kb_remove", { docId }),
+    kbUpdateMeta: (docId, meta) => invoke("kb_update_meta", { docId, meta }),
+    kbSearch: (text) => invoke("kb_search", { text }),
+    kbEmbed: () => invoke("kb_embed"),
+    onKbProgress: (handler) => subscribe<KbProgress>("kb-progress", handler),
+    openPath: (path) => opener.openPath(path),
   };
 }
 
@@ -96,6 +279,59 @@ function demoBackend(): Backend {
     },
     imageUrl: (_docId, relId) => `/demo/${relId}.png`,
     onFileDrop: () => () => {},
+    ...unsupported(),
+  };
+}
+
+/** Placeholder for features the browser demo does not implement yet. */
+function unsupported(): Omit<
+  Backend,
+  "open" | "pickAndOpen" | "blocks" | "saveAs" | "close" | "initialFile" | "imageUrl" | "onFileDrop"
+> {
+  const no = () => Promise.reject(new Error("演示模式不支持此功能"));
+  const off = () => () => {};
+  return {
+    docState: no,
+    summary: no,
+    undo: no,
+    redo: no,
+    save: no,
+    setCommentDone: no,
+    fixComment: no,
+    fixBatch: no,
+    onFixProgress: off,
+    applyFix: no,
+    rejectFix: no,
+    documentAuthors: no,
+    assignAuthor: no,
+    reviewers: no,
+    createReviewer: no,
+    updateReviewer: no,
+    deleteReviewer: no,
+    mergeReviewers: no,
+    reviewerProfile: no,
+    distillProfile: no,
+    reviewerCases: no,
+    preReview: no,
+    exportDataset: no,
+    settings: no,
+    saveSettings: no,
+    providers: no,
+    saveProvider: no,
+    deleteProvider: no,
+    fetchModels: no,
+    providerModels: no,
+    setModelProfile: no,
+    testRole: no,
+    kbDocuments: no,
+    kbStats: no,
+    kbImport: no,
+    kbRemove: no,
+    kbUpdateMeta: no,
+    kbSearch: no,
+    kbEmbed: no,
+    onKbProgress: off,
+    openPath: no,
   };
 }
 
