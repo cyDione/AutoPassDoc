@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { FolderOpen } from "lucide-react";
 import { backend as backendPromise, type Backend } from "./api";
 import { CommentsPanel } from "./components/CommentsPanel";
-import { DocumentView, type ScrollTarget } from "./components/DocumentView";
+import { DocumentView, type MarginHost, type ScrollTarget } from "./components/DocumentView";
 import type { Section } from "./components/reviewers/PreReviewCard";
 import { SettingsDialog, type SettingsTab } from "./components/settings/SettingsDialog";
 import { Sidebar, type Page } from "./components/Sidebar";
@@ -31,6 +31,9 @@ export default function App() {
   const { doc, docState, version, authors, setAuthors, loading, load, edit, undo, redo, save, saveAs } = useDocumentSession(backend, notify);
   const [theme, setTheme] = useTheme();
   const [commentLayout, setCommentLayout] = useCommentLayout();
+  const marginLayout = commentLayout === "margin";
+  /** The page margin that holds the comment cards in the classic Word layout (C-4). */
+  const [marginHost, setMarginHost] = useState<MarginHost | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
   const [page, setPage] = useState<Page>("doc");
@@ -157,10 +160,14 @@ export default function App() {
 
   const commentsById = useMemo(() => new Map(doc?.summary.comments.map((c) => [c.id, c]) ?? []), [doc]);
 
-  const selectComment = useCallback((c: CommentView) => {
-    setActiveCommentId(c.id);
-    if (c.blockIndex !== null) setTarget({ blockIndex: c.blockIndex, commentId: c.id, nonce: Date.now() });
-  }, []);
+  // In the margin the card is already beside its text, so the document only scrolls when that text is off screen.
+  const selectComment = useCallback(
+    (c: CommentView) => {
+      setActiveCommentId(c.id);
+      if (c.blockIndex !== null) setTarget({ blockIndex: c.blockIndex, commentId: c.id, nonce: Date.now(), soft: marginLayout });
+    },
+    [marginLayout],
+  );
 
   // Clicking highlighted text cycles through the comments that cover it.
   const onDocCommentClick = useCallback(
@@ -298,9 +305,11 @@ export default function App() {
                   onCommentClick={onDocCommentClick}
                   onTopBlockChange={setTopBlock}
                   onSelectionChange={onSelectionChange}
+                  margin={marginLayout && panelOpen}
+                  onMarginHost={setMarginHost}
                 />
                 <aside
-                  className={`panel${panelOpen ? "" : " closed"}${panelWidth.resizing ? " resizing" : ""}`}
+                  className={`panel${panelOpen ? "" : " closed"}${marginLayout ? " margin-layout" : ""}${panelWidth.resizing ? " resizing" : ""}`}
                   style={panelWidth.width === null ? undefined : ({ "--panel-w": `${panelWidth.width}px` } as CSSProperties)}
                 >
                   <div
@@ -326,6 +335,9 @@ export default function App() {
                     onOpenSettings={openRoleSettings}
                     onSearch={onSearch}
                     notify={notify}
+                    layout={commentLayout}
+                    onLayout={setCommentLayout}
+                    marginHost={marginLayout ? marginHost : null}
                   />
                 </aside>
               </>
