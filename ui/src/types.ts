@@ -196,6 +196,7 @@ export interface AuthorView {
 export interface ReviewerProfile {
   reviewerId: number;
   version: number;
+  /** Unix seconds. */
   createdAt: number;
   caseCount: number;
   summary: string;
@@ -217,6 +218,7 @@ export interface Case {
   action: "pending" | "accepted" | "edited" | "rejected";
   confidence: number | null;
   category: string | null;
+  /** Unix seconds. */
   createdAt: number;
 }
 
@@ -310,8 +312,11 @@ export interface KbDocument {
   meta: KbMeta;
   chunkCount: number;
   charCount: number;
+  /** Unix seconds. */
   importedAt: number;
   sha256: string;
+  /** Problems from the last import, e.g. a scanned PDF that needs OCR. */
+  warnings: string[];
 }
 
 export interface KbImportReport {

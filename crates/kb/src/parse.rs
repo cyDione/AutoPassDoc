@@ -161,7 +161,12 @@ fn parse_markdown(text: &str) -> ParsedFile {
                 }
                 seen_content = true;
                 return SourceLine {
-                    text: raw.to_string(),
+                    // Chunks and citations show the heading without `#`.
+                    text: if heading.is_empty() {
+                        raw.to_string()
+                    } else {
+                        heading.clone()
+                    },
                     style_level: Some(level),
                     display: Some(heading),
                 };

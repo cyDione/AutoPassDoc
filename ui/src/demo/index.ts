@@ -700,6 +700,9 @@ export function createDemoBackend(): Backend {
       if (!providers.some((p) => p.id === settings.roles.embedding.providerId)) throw new Error("向量模型的服务商不存在或已删除");
       void embedPending();
     },
+    async kbClearEmbeddings() {
+      embedded = 0;
+    },
     onKbProgress(handler) {
       kbListeners.add(handler);
       return () => kbListeners.delete(handler);
@@ -707,5 +710,8 @@ export function createDemoBackend(): Backend {
     async openPath(path) {
       console.info(`[演示] 用系统默认程序打开：${path}`);
     },
+
+    confirm: async (message) => window.confirm(message),
+    onCloseRequested: () => () => {},
   };
 }

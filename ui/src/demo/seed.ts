@@ -150,7 +150,6 @@ export function seedCases(): Case[] {
   ];
 }
 
-/** Documents also carry the last import's warnings, which types.ts does not list yet. */
 export function seedKbDocuments(): KbDocument[] {
   const d = (
     id: number,
@@ -164,7 +163,7 @@ export function seedKbDocuments(): KbDocument[] {
     charCount: number,
     daysAgo: number,
     warnings: string[] = [],
-  ): KbDocument & { warnings: string[] } => ({
+  ): KbDocument => ({
     id,
     title,
     fileName,

@@ -204,7 +204,7 @@ impl Core {
             self.with_kb(|kb| kb.store_embeddings(model, &items))
                 .map_err(|e| match e {
                     Error::Kb(kb::Error::DimensionMismatch { .. }) => Error::Invalid(format!(
-                        "向量维度与之前用「{model}」生成的不一致（{e}）。换了同名的不同模型时，请先在知识库页清空向量"
+                        "向量维度与之前用「{model}」生成的不一致（{e}）。换了同名的不同模型时，请先在知识库页点「清空向量」"
                     )),
                     e => e,
                 })?;
@@ -214,6 +214,9 @@ impl Core {
 
     /// Deletes the vectors of the configured embedding model.
     pub fn kb_clear_embeddings(&self) -> Result<()> {
+        if self.embedding.load(Ordering::Acquire) {
+            return Err(Error::Invalid("正在生成向量，请等它结束后再清空".into()));
+        }
         if let Some(model) = self.embedding_model()? {
             self.with_kb(|kb| kb.clear_embeddings(&model))?;
         }

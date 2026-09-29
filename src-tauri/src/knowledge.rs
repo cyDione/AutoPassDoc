@@ -141,3 +141,9 @@ pub async fn kb_embed(app: AppHandle, core: CoreState<'_>) -> Res<()> {
     embed_later(app, core);
     Ok(())
 }
+
+#[tauri::command]
+pub async fn kb_clear_embeddings(core: CoreState<'_>) -> Res<()> {
+    let core = core.inner().clone();
+    blocking(move || core.kb_clear_embeddings().map_err(err)).await
+}

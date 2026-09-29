@@ -9,6 +9,8 @@
     "core:default",
     "dialog:allow-open",
     "dialog:allow-save",
+    "core:window:allow-destroy",
+    "dialog:allow-message",
     "opener:default",
     {
       "identifier": "opener:allow-open-path",

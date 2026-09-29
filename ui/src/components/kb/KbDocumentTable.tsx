@@ -7,13 +7,6 @@ import { ConfirmButton } from "../ConfirmButton";
 
 const ROW_HEIGHT = 52;
 
-/**
- * Warnings from the document's last import (e.g. a scanned PDF that needs OCR).
- * The Rust side sends them, but types.ts does not list the field yet.
- */
-function importWarnings(doc: KbDocument): string[] {
-  return "warnings" in doc && Array.isArray(doc.warnings) ? doc.warnings : [];
-}
 
 interface Props {
   documents: KbDocument[];
@@ -69,7 +62,7 @@ export const KbDocumentTable = memo(function KbDocumentTable({ documents, onOpen
         <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
           {virtualizer.getVirtualItems().map((item) => {
             const d = rows[item.index];
-            const warnings = importWarnings(d);
+            const warnings = d.warnings ?? [];
             return (
               <div
                 key={item.key}

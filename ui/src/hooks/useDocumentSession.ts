@@ -20,11 +20,26 @@ export function useDocumentSession(backend: Backend | null, notify: Notify) {
   const [authors, setAuthors] = useState<AuthorView[]>([]);
   const [loading, setLoading] = useState(false);
   const docRef = useRef(doc);
+  const dirtyRef = useRef(false);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
 
   useEffect(() => {
     docRef.current = doc;
   }, [doc]);
+  useEffect(() => {
+    dirtyRef.current = !!docState?.dirty;
+  }, [docState]);
+
+  /** Whether the open document's unsaved changes may be dropped. */
+  const confirmDiscard = useCallback(async (): Promise<boolean> => {
+    const current = docRef.current;
+    if (!backend || !current || !dirtyRef.current) return true;
+    return backend.confirm(
+      `“${current.fileName}”有未保存的修改，继续将丢弃这些修改。`,
+      "放弃未保存的修改？",
+      "放弃修改",
+    );
+  }, [backend]);
 
   const enqueue = useCallback(<T,>(run: () => Promise<T>): Promise<T> => {
     const result = queue.current.then(run);
@@ -66,6 +81,10 @@ export function useDocumentSession(backend: Backend | null, notify: Notify) {
       try {
         const next = await open();
         if (!next) return false;
+        if (!(await confirmDiscard())) {
+          void backend.close(next.docId);
+          return false;
+        }
         const previous = docRef.current;
         if (previous) void backend.close(previous.docId);
         docRef.current = next;
@@ -85,8 +104,11 @@ export function useDocumentSession(backend: Backend | null, notify: Notify) {
         setLoading(false);
       }
     },
-    [backend, notify, refreshAuthors],
+    [backend, confirmDiscard, notify, refreshAuthors],
   );
+
+  // Closing the window asks too.
+  useEffect(() => backend?.onCloseRequested(confirmDiscard), [backend, confirmDiscard]);
 
   const undoOrRedo = useCallback(
     async (which: "undo" | "redo") => {
@@ -111,6 +133,12 @@ export function useDocumentSession(backend: Backend | null, notify: Notify) {
     try {
       const path = await enqueue(() => backend.saveAs(current.docId));
       if (!path) return;
+      // Like Word, the title now names the copy that 保存 writes to.
+      const fileName = path.split(/[\\/]/).pop() || current.fileName;
+      if (docRef.current?.docId === current.docId) {
+        docRef.current = { ...docRef.current, fileName };
+        setDoc((d) => (d?.docId === current.docId ? { ...d, fileName } : d));
+      }
       notify(`已另存为 ${path}`);
       setDocState(await backend.docState(current.docId));
     } catch (e) {

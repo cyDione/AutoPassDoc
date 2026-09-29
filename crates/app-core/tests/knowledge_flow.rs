@@ -248,6 +248,9 @@ async fn imports_embeds_searches_and_cites() {
     let prompt = chat["messages"][1]["content"].as_str().unwrap();
     assert!(prompt.contains("参考资料"), "{prompt}");
 
+    core.kb_clear_embeddings().unwrap();
+    assert_eq!(core.kb_stats().unwrap().embedded, 0);
+
     core.kb_remove(notice_doc.id).unwrap();
     assert_eq!(core.kb_documents().unwrap().len(), 1);
 }

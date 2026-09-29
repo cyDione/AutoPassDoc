@@ -6,6 +6,7 @@ import { KbDocumentTable } from "../components/kb/KbDocumentTable";
 import { KbSearch } from "../components/kb/KbSearch";
 import type { Notify } from "../hooks/useDocumentSession";
 import type { KbDocument, KbImportReport, KbMeta, KbProgress, KbStats, Settings } from "../types";
+import { ConfirmButton } from "../components/ConfirmButton";
 import { errorMessage, formatNumber } from "../util";
 
 export interface DroppedFiles {
@@ -113,6 +114,15 @@ export const KnowledgeBasePage = memo(function KnowledgeBasePage({ backend, acti
     setFailure(null);
     backend.kbEmbed().catch((e) => notify(`无法开始向量化：${errorMessage(e)}`, true));
   };
+  const clearEmbeddings = () => {
+    backend
+      .kbClearEmbeddings()
+      .then(() => {
+        notify("已清空当前向量模型的向量，可以重新向量化");
+        refresh();
+      })
+      .catch((e) => notify(`清空向量失败：${errorMessage(e)}`, true));
+  };
   const openPath = useCallback(
     (path: string) => void backend.openPath(path).catch((e) => notify(`无法打开文件：${errorMessage(e)}`, true)),
     [backend, notify],
@@ -162,6 +172,17 @@ export const KnowledgeBasePage = memo(function KnowledgeBasePage({ backend, acti
           <button type="button" className="btn" disabled={!hasEmbedder || embedding || allEmbedded} title={embedTitle} onClick={() => void embed()}>
             <Zap size={15} /> 开始向量化
           </button>
+          {stats !== null && stats.embedded > 0 && (
+            <ConfirmButton
+              className="btn"
+              disabled={embedding}
+              title="删除当前向量模型生成的全部向量，换用同名的其他模型后需要这样做"
+              confirmLabel="确认清空？"
+              onConfirm={clearEmbeddings}
+            >
+              清空向量
+            </ConfirmButton>
+          )}
         </header>
 
         {progress && (

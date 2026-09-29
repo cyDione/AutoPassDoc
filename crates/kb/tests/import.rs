@@ -102,6 +102,7 @@ fn imports_markdown_with_heading_levels() {
         hits.iter()
             .all(|h| !h.heading_path.iter().any(|p| p.contains("不是标题")))
     );
+    assert!(hits.iter().all(|h| !h.text.contains("##")));
     assert_offsets(&kb, doc.id);
 }
 

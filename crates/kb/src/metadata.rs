@@ -31,6 +31,10 @@ static ISSUER_SUFFIX: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
+/// "发布日期：2024年1月20日", as on government websites.
+static DATE_LABEL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(发布|成文|发文|印发)(日期|时间)\s*:").unwrap());
+
 static SEAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*\([^)]{0,4}章\)$").unwrap());
 
 static TITLE_SUFFIX: LazyLock<Regex> = LazyLock::new(|| {
@@ -273,12 +277,14 @@ fn find_signature_date(lines: &[Line]) -> Option<(usize, String, String)> {
     })
 }
 
-/// A date under the title, e.g. "（2021年6月10日第十三届全国人民代表大会常务委员会第二十九次会议通过）".
+/// A date under the title, e.g. "（2021年6月10日第十三届全国人民代表大会常务委员会第二十九次会议通过）"
+/// or "发布日期：2024年1月20日".
 fn find_top_date(head: &[Line]) -> Option<String> {
     head.iter().take(8).find_map(|l| {
         let c = DATE.captures(&l.norm)?;
         let alone = c.get(0).unwrap().as_str().chars().count() + 2 >= l.len;
-        (alone || l.norm.starts_with('(')).then(|| date_from(&c[1], &c[2], &c[3]))?
+        (alone || l.norm.starts_with('(') || DATE_LABEL.is_match(&l.norm))
+            .then(|| date_from(&c[1], &c[2], &c[3]))?
     })
 }
 

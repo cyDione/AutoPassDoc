@@ -85,6 +85,18 @@ fn joint_issuers_and_printing_date_in_the_footer() {
 }
 
 #[test]
+fn labeled_publication_date() {
+    let m = meta(
+        "某市统计局关于加强统计数据质量管理的规定
+某统发〔2024〕3号
+发布日期：2024年1月20日
+第一条 各部门在报告中引用统计数据的，应当注明数据来源。",
+    );
+    assert_eq!(m.date, some("2024-01-20"));
+    assert_eq!(m.doc_number, some("某统发〔2024〕3号"));
+}
+
+#[test]
 fn law_with_adoption_date_under_the_title() {
     let m = meta(
         "中华人民共和国数据安全法

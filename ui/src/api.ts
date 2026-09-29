@@ -114,9 +114,17 @@ export interface Backend {
   kbSearch(text: string): Promise<KbHit[]>;
   /** Starts embedding chunks that lack vectors; progress arrives through onKbProgress. */
   kbEmbed(): Promise<void>;
+  /** Deletes the vectors of the configured embedding model, e.g. after switching to a different model with the same name. */
+  kbClearEmbeddings(): Promise<void>;
   onKbProgress(handler: (p: KbProgress) => void): Unsubscribe;
   /** Opens a file with the system's default app. */
   openPath(path: string): Promise<void>;
+
+  // Window
+  /** Asks the user to confirm a destructive step; resolves true to go ahead. */
+  confirm(message: string, title: string, okLabel: string): Promise<boolean>;
+  /** Runs `allow` when the user closes the window; the window stays open when it resolves false. */
+  onCloseRequested(allow: () => Promise<boolean>): Unsubscribe;
 }
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -126,6 +134,7 @@ async function tauriBackend(): Promise<Backend> {
   const dialog = await import("@tauri-apps/plugin-dialog");
   const opener = await import("@tauri-apps/plugin-opener");
   const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
   const { listen } = await import("@tauri-apps/api/event");
 
   const subscribe = <T,>(event: string, handler: (payload: T) => void): Unsubscribe => {
@@ -249,8 +258,25 @@ async function tauriBackend(): Promise<Backend> {
     kbUpdateMeta: (docId, meta) => invoke("kb_update_meta", { docId, meta }),
     kbSearch: (text) => invoke("kb_search", { text }),
     kbEmbed: () => invoke("kb_embed"),
+    kbClearEmbeddings: () => invoke("kb_clear_embeddings"),
     onKbProgress: (handler) => subscribe<KbProgress>("kb-progress", handler),
     openPath: (path) => opener.openPath(path),
+
+    confirm: (message, title, okLabel) =>
+      dialog.confirm(message, { title, kind: "warning", okLabel, cancelLabel: "取消" }),
+    onCloseRequested(allow) {
+      let unlisten: (() => void) | null = null;
+      let cancelled = false;
+      getCurrentWindow()
+        .onCloseRequested(async (event) => {
+          if (!(await allow())) event.preventDefault();
+        })
+        .then((fn) => (cancelled ? fn() : (unlisten = fn)));
+      return () => {
+        cancelled = true;
+        unlisten?.();
+      };
+    },
   };
 }
 

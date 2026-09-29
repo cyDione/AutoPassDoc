@@ -119,6 +119,7 @@ pub fn run() {
             knowledge::kb_update_meta,
             knowledge::kb_search,
             knowledge::kb_embed,
+            knowledge::kb_clear_embeddings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AutoPassDoc");
