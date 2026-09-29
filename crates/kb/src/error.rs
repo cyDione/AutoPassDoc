@@ -7,6 +7,11 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 pub enum Error {
     #[error("不支持的格式：{0}（支持 .docx、.pdf、.txt、.md）")]
     UnsupportedFormat(String),
+    /// PNG and JPEG files are read only by an online parser.
+    #[error(
+        "图片需要增强解析：请在「设置 → 知识库」中选择 MinerU 或 PaddleOCR 并保存 Key 后再导入"
+    )]
+    NeedsEnhanced,
     #[error("无法读取文件 {path}：{source}")]
     Read {
         path: PathBuf,

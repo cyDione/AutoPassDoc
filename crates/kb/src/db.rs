@@ -8,7 +8,8 @@ use crate::{Error, Result};
 pub(crate) const PATH_SEP: char = '\u{1F}';
 
 /// Each entry upgrades the schema by one version.
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE documents (
     id INTEGER PRIMARY KEY,
     file_name TEXT NOT NULL,
@@ -77,7 +78,12 @@ CREATE VIRTUAL TABLE chunks_fts USING fts5(
     contentless_delete = 1,
     tokenize = 'unicode61 remove_diacritics 2'
 );
-"#];
+"#,
+    // v2: which parser produced the text (`builtin`, `mineru`, `paddleocr`).
+    r#"
+ALTER TABLE documents ADD COLUMN parser TEXT NOT NULL DEFAULT 'builtin';
+"#,
+];
 
 pub(crate) fn open(path: &std::path::Path) -> Result<Connection> {
     let mut conn = Connection::open(path)?;

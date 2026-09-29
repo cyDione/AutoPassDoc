@@ -678,7 +678,9 @@ impl Core {
         std::fs::create_dir_all(&dir)?;
         let path = unique_path(dir.join(&name));
         std::fs::write(&path, &bytes)?;
-        let mut reports = self.kb_import(std::slice::from_ref(&path), |_, _, _| {});
+        let mut reports = self
+            .kb_import(std::slice::from_ref(&path), |_, _, _| {})
+            .await;
         reports
             .pop()
             .ok_or_else(|| Error::Invalid("导入失败".into()))

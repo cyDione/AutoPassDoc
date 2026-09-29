@@ -1,7 +1,7 @@
 //! Reading supported file formats into lines.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -48,8 +48,83 @@ pub(crate) fn format_of(path: &Path) -> Result<&'static str> {
         "pdf" => Ok("pdf"),
         "txt" | "text" => Ok("txt"),
         "md" | "markdown" => Ok("md"),
+        "png" | "jpg" | "jpeg" => Err(Error::NeedsEnhanced),
         "" => Err(Error::UnsupportedFormat("无扩展名".into())),
         other => Err(Error::UnsupportedFormat(format!(".{other}"))),
+    }
+}
+
+/// Extensions the built-in parsers read, lowercase.
+pub const SUPPORTED_EXTENSIONS: &[&str] = &["docx", "pdf", "txt", "text", "md", "markdown"];
+/// Image extensions an online parser reads, lowercase.
+pub const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg"];
+/// Files larger than this are skipped when a folder is imported.
+pub const MAX_FILE_BYTES: u64 = 200 * 1024 * 1024;
+
+/// The files to import for the paths the user picked or dropped.
+///
+/// A file is kept as given, whatever its type, so an unsupported one is
+/// reported instead of silently dropped. A folder is walked recursively
+/// without following symbolic links, keeping files with a supported
+/// extension (plus PNG/JPEG when `images` is set) and skipping hidden
+/// files and folders (`.name`), Office lock files (`~$name`) and files over
+/// [`MAX_FILE_BYTES`]. Paths keep the order given, a folder's files come
+/// sorted by path, and a file reached twice is listed once.
+pub fn expand_import_paths(paths: &[PathBuf], images: bool) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for path in paths {
+        if path.is_dir() {
+            let mut found = Vec::new();
+            walk_folder(path, images, &mut found);
+            found.sort();
+            out.extend(found.into_iter().filter(|p| seen.insert(p.clone())));
+        } else if seen.insert(path.clone()) {
+            out.push(path.clone());
+        }
+    }
+    out
+}
+
+fn walk_folder(dir: &Path, images: bool, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') || name.starts_with("~$") {
+            continue;
+        }
+        // `file_type` does not follow symbolic links.
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if kind.is_dir() {
+            walk_folder(&path, images, out);
+        } else if kind.is_file() {
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase)
+                .unwrap_or_default();
+            let wanted = SUPPORTED_EXTENSIONS.contains(&ext.as_str())
+                || (images && IMAGE_EXTENSIONS.contains(&ext.as_str()));
+            let small = entry.metadata().is_ok_and(|m| m.len() <= MAX_FILE_BYTES);
+            if wanted && small {
+                out.push(path);
+            }
+        }
+    }
+}
+
+/// Format name for a file whose text comes from an online parser: the
+/// built-in formats plus `image` for PNG and JPEG.
+pub(crate) fn format_of_parsed(path: &Path) -> Result<&'static str> {
+    match format_of(path) {
+        Err(Error::NeedsEnhanced) => Ok("image"),
+        other => other,
     }
 }
 
@@ -178,6 +253,14 @@ fn table_lines(doc: &docx_engine::Document, table: &docx_engine::Table) -> Vec<S
         }
         grid.push(out);
     }
+    grid_lines(grid)
+}
+
+/// Lines for a table given as a grid of cell texts, merged cells already
+/// repeated: the first row is the header, every other row becomes
+/// "列名：值；列名：值". Tables with fewer than two rows or columns have no
+/// header to label values with and give one line per row.
+fn grid_lines(mut grid: Vec<Vec<String>>) -> Vec<String> {
     grid.retain(|r| r.iter().any(|c| !c.is_empty()));
     let columns = grid.iter().map(Vec::len).max().unwrap_or(0);
     // Plain rows when there is no header to label values with.
@@ -255,6 +338,247 @@ fn parse_markdown(text: &str) -> ParsedFile {
         title_hint,
         ..ParsedFile::new(lines)
     }
+}
+
+/// Markdown from an online parser (MinerU, PaddleOCR) as a parsed file.
+pub(crate) fn parse_external(md: &str) -> ParsedFile {
+    let mut parsed = parse_markdown(&external_to_markdown(md));
+    for line in &mut parsed.lines {
+        // Online parsers mark every heading with `#`, often all at one
+        // level; numbered headings (第一章, 一、) keep their natural ranks.
+        if line.style_level.is_some()
+            && detect_heading(line.display.as_deref().unwrap_or(&line.text))
+                .is_some_and(|h| h.kind.rank().is_some())
+        {
+            line.style_level = None;
+        }
+    }
+    parsed
+}
+
+/// Lines from the Markdown an online parser (MinerU, PaddleOCR) returns,
+/// ready for chunking like the built-in formats: `#` headings become
+/// heading lines, HTML and pipe tables become "列名：值" rows as for Word
+/// tables, and images, HTML comments and formatting tags are dropped.
+pub fn parse_external_markdown(md: &str) -> Vec<SourceLine> {
+    parse_external(md).lines
+}
+
+static HTML_COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<!--.*?-->").unwrap());
+static HTML_TABLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<table\b[^>]*>.*?</table\s*>").unwrap());
+static HTML_ROW: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<tr\b[^>]*>(.*?)</tr\s*>").unwrap());
+static HTML_CELL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<t[dh]\b([^>]*)>(.*?)</t[dh]\s*>").unwrap());
+static ROWSPAN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)\browspan\s*=\s*["']?\s*(\d+)"#).unwrap());
+static COLSPAN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)\bcolspan\s*=\s*["']?\s*(\d+)"#).unwrap());
+static HTML_BREAK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)<br\s*/?>|</?(?:p|div)\b[^>]*>").unwrap());
+static HTML_TAG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r"(?i)</?(?:span|sup|sub|b|i|u|s|em|strong|font|center|small|big|mark|a|img",
+        r"|html|body|thead|tbody|tfoot|caption|colgroup|col)\b[^>]*>"
+    ))
+    .unwrap()
+});
+static MD_IMAGE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"!\[[^\]\n]*\]\([^)\n]*\)").unwrap());
+static PIPE_SEPARATOR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$").unwrap());
+static ENTITY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"&(#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[a-zA-Z]{2,8});").unwrap());
+
+/// Rewrites online-parser Markdown into plain Markdown whose tables are
+/// already row lines.
+fn external_to_markdown(md: &str) -> String {
+    let md = md.replace("\r\n", "\n");
+    let md = HTML_COMMENT.replace_all(&md, "");
+    // Tables stand on their own lines.
+    let md = HTML_TABLE.replace_all(&md, |c: &regex::Captures| {
+        format!("\n{}\n", html_table_lines(&c[0]).join("\n"))
+    });
+    let lines: Vec<&str> = md.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut in_fence = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            out.push(line.to_string());
+            i += 1;
+            continue;
+        }
+        if !in_fence
+            && trimmed.contains('|')
+            && lines
+                .get(i + 1)
+                .is_some_and(|next| PIPE_SEPARATOR.is_match(next.trim()))
+        {
+            let mut grid = vec![pipe_cells(trimmed)];
+            i += 2;
+            while let Some(row) = lines.get(i).map(|l| l.trim())
+                && !row.is_empty()
+                && row.contains('|')
+            {
+                grid.push(pipe_cells(row));
+                i += 1;
+            }
+            let width = grid.iter().map(Vec::len).max().unwrap_or(0);
+            for row in &mut grid {
+                row.resize(width, String::new());
+            }
+            out.extend(grid_lines(grid));
+            continue;
+        }
+        out.push(if in_fence {
+            line.to_string()
+        } else {
+            clean_inline(line)
+        });
+        i += 1;
+    }
+    out.join("\n")
+}
+
+/// A line without images and formatting tags, entities decoded.
+fn clean_inline(line: &str) -> String {
+    let line = MD_IMAGE.replace_all(line, "");
+    let line = HTML_BREAK.replace_all(&line, " ");
+    let line = HTML_TAG.replace_all(&line, "");
+    let line = unescape_entities(&line);
+    // A line that held only an image is empty now, not whitespace.
+    if line.trim().is_empty() {
+        String::new()
+    } else {
+        line.trim_end().to_string()
+    }
+}
+
+/// Cells of a pipe-table row; `\|` is a literal bar.
+fn pipe_cells(row: &str) -> Vec<String> {
+    let row = row.strip_prefix('|').unwrap_or(row);
+    let row = row.strip_suffix('|').unwrap_or(row);
+    let mut cells = Vec::new();
+    let mut cell = String::new();
+    let mut chars = row.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek() == Some(&'|') => {
+                cell.push('|');
+                chars.next();
+            }
+            '|' => cells.push(std::mem::take(&mut cell)),
+            c => cell.push(c),
+        }
+    }
+    cells.push(cell);
+    cells.iter().map(|c| cell_text(c)).collect()
+}
+
+/// Text of a table cell on one line.
+fn cell_text(html: &str) -> String {
+    let text = clean_inline(&HTML_BREAK.replace_all(html, " "));
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Rows of an HTML table as lines, with `rowspan` and `colspan` cells
+/// repeated in every row and column they cover.
+fn html_table_lines(table: &str) -> Vec<String> {
+    let mut grid: Vec<Vec<String>> = Vec::new();
+    // Cells from earlier rows reaching down: (column, text, rows left).
+    let mut pending: Vec<(usize, String, usize)> = Vec::new();
+    for row in HTML_ROW.captures_iter(table) {
+        let mut out: Vec<Option<String>> = Vec::new();
+        for (col, text, left) in &mut pending {
+            if out.len() <= *col {
+                out.resize(*col + 1, None);
+            }
+            out[*col] = Some(text.clone());
+            *left -= 1;
+        }
+        pending.retain(|(_, _, left)| *left > 0);
+        let mut col = 0;
+        for cell in HTML_CELL.captures_iter(&row[1]) {
+            let attrs = &cell[1];
+            let span = |re: &Regex| {
+                re.captures(attrs)
+                    .and_then(|c| c[1].parse::<usize>().ok())
+                    .unwrap_or(1)
+                    .clamp(1, 1000)
+            };
+            let (rowspan, colspan) = (span(&ROWSPAN), span(&COLSPAN));
+            let text = cell_text(&cell[2]);
+            while out.get(col).is_some_and(Option::is_some) {
+                col += 1;
+            }
+            for c in col..col + colspan {
+                if out.len() <= c {
+                    out.resize(c + 1, None);
+                }
+                out[c] = Some(text.clone());
+                if rowspan > 1 {
+                    pending.push((c, text.clone(), rowspan - 1));
+                }
+            }
+            col += colspan;
+        }
+        grid.push(out.into_iter().map(Option::unwrap_or_default).collect());
+    }
+    let width = grid.iter().map(Vec::len).max().unwrap_or(0);
+    for row in &mut grid {
+        row.resize(width, String::new());
+    }
+    grid_lines(grid)
+}
+
+/// Decodes the entities online parsers emit: the XML five, `&nbsp;`, common
+/// typographic names and numeric references. Unknown names stay as written.
+fn unescape_entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    ENTITY
+        .replace_all(s, |c: &regex::Captures| {
+            let name = &c[1];
+            let decoded = if let Some(num) = name.strip_prefix('#') {
+                let n = match num.strip_prefix(['x', 'X']) {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                    None => num.parse().ok(),
+                };
+                n.and_then(char::from_u32)
+            } else {
+                match name {
+                    "amp" => Some('&'),
+                    "lt" => Some('<'),
+                    "gt" => Some('>'),
+                    "quot" => Some('"'),
+                    "apos" => Some('\''),
+                    "nbsp" | "ensp" | "emsp" | "thinsp" => Some(' '),
+                    "ldquo" => Some('“'),
+                    "rdquo" => Some('”'),
+                    "lsquo" => Some('‘'),
+                    "rsquo" => Some('’'),
+                    "middot" => Some('·'),
+                    "times" => Some('×'),
+                    "divide" => Some('÷'),
+                    "plusmn" => Some('±'),
+                    "le" => Some('≤'),
+                    "ge" => Some('≥'),
+                    "deg" => Some('°'),
+                    "mdash" => Some('—'),
+                    "ndash" => Some('–'),
+                    "hellip" => Some('…'),
+                    _ => None,
+                }
+            };
+            decoded.map_or_else(|| c[0].to_string(), String::from)
+        })
+        .into_owned()
 }
 
 /// "- 3 -", "第 3 页", "第3页 共10页", "3/10".

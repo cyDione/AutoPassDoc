@@ -87,18 +87,22 @@ pub async fn kb_import(
         let (app, core) = (app.clone(), core.clone());
         move || {
             let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-            Ok(core.kb_import(&paths, |done, total, current| {
-                emit(
-                    &app,
-                    KbProgress {
-                        stage: "import",
-                        done,
-                        total,
-                        current: (!current.is_empty()).then(|| current.to_string()),
-                        message: None,
-                    },
-                )
-            }))
+            // Parsing and indexing block; online parsing awaits the network.
+            Ok(tauri::async_runtime::block_on(core.kb_import(
+                &paths,
+                |done, total, current| {
+                    emit(
+                        &app,
+                        KbProgress {
+                            stage: "import",
+                            done,
+                            total,
+                            current: (!current.is_empty()).then(|| current.to_string()),
+                            message: None,
+                        },
+                    )
+                },
+            )))
         }
     })
     .await?;

@@ -652,7 +652,10 @@ mod tests {
     fn import_text(core: &Core, dir: &Path, name: &str, text: &str) {
         let path = dir.join(name);
         std::fs::write(&path, text).unwrap();
-        let r = core.kb_import(&[path], |_, _, _| {});
+        let r = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(core.kb_import(&[path], |_, _, _| {}));
         assert!(r[0].error.is_none(), "{:?}", r[0].error);
     }
 

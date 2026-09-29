@@ -6,6 +6,8 @@ pub enum Error {
     Document(#[from] docx_engine::Error),
     #[error("{0}")]
     Kb(#[from] kb::Error),
+    #[error("{0}")]
+    Enhanced(#[from] crate::enhanced::EnhancedError),
     #[error("数据库错误: {0}")]
     Database(#[from] rusqlite::Error),
     #[error("文件读写失败: {0}")]

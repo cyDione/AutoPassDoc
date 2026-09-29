@@ -85,6 +85,78 @@ pub struct Settings {
     pub roles: Roles,
     pub fix: FixSettings,
     pub web: WebSettings,
+    pub kb: KbSettings,
+}
+
+/// Who reads PDFs and images into the knowledge base.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ParserKind {
+    /// The built-in parsers (Word, PDF text layer, TXT, Markdown).
+    #[default]
+    Builtin,
+    /// MinerU (mineru.net) online document parsing.
+    Mineru,
+    /// PaddleOCR on Baidu AI Studio.
+    Paddleocr,
+}
+
+impl ParserKind {
+    /// The name stored with each document (`KbDocument::parser`).
+    pub fn id(self) -> &'static str {
+        match self {
+            ParserKind::Builtin => kb::BUILTIN_PARSER,
+            ParserKind::Mineru => "mineru",
+            ParserKind::Paddleocr => "paddleocr",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ParserKind::Builtin => "普通",
+            ParserKind::Mineru => "MinerU",
+            ParserKind::Paddleocr => "PaddleOCR",
+        }
+    }
+
+    /// Where the service's key is kept in the secret store; `None` for the
+    /// built-in parser.
+    pub fn secret_name(self) -> Option<&'static str> {
+        match self {
+            ParserKind::Builtin => None,
+            ParserKind::Mineru => Some("parser:mineru"),
+            ParserKind::Paddleocr => Some("parser:paddleocr"),
+        }
+    }
+}
+
+pub const DEFAULT_MINERU_MODEL: &str = "vlm";
+pub const DEFAULT_PADDLEOCR_BASE_URL: &str = "https://paddleocr.aistudio-app.com";
+pub const DEFAULT_PADDLEOCR_MODEL: &str = "PaddleOCR-VL-1.6";
+
+/// Knowledge-base import: the parser for PDFs and images. An online parser
+/// is used only once its key is saved (enhanced mode).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct KbSettings {
+    pub parser: ParserKind,
+    /// MinerU `model_version`: `vlm` or `pipeline`.
+    pub mineru_model: String,
+    /// PaddleOCR service address; change it for a self-hosted service.
+    pub paddleocr_base_url: String,
+    /// `PaddleOCR-VL-1.6` or `PP-StructureV3`.
+    pub paddleocr_model: String,
+}
+
+impl Default for KbSettings {
+    fn default() -> Self {
+        Self {
+            parser: ParserKind::Builtin,
+            mineru_model: DEFAULT_MINERU_MODEL.into(),
+            paddleocr_base_url: DEFAULT_PADDLEOCR_BASE_URL.into(),
+            paddleocr_model: DEFAULT_PADDLEOCR_MODEL.into(),
+        }
+    }
 }
 
 impl Settings {
@@ -117,6 +189,17 @@ impl Settings {
             })
             .filter(|w| !w.is_empty() && seen.insert(w.clone()))
             .collect();
+        let kb = &mut self.kb;
+        let or_default = |v: &str, default: &str| {
+            let v = v.trim();
+            if v.is_empty() { default } else { v }.to_string()
+        };
+        kb.mineru_model = or_default(&kb.mineru_model, DEFAULT_MINERU_MODEL);
+        kb.paddleocr_model = or_default(&kb.paddleocr_model, DEFAULT_PADDLEOCR_MODEL);
+        kb.paddleocr_base_url = or_default(
+            kb.paddleocr_base_url.trim().trim_end_matches('/'),
+            DEFAULT_PADDLEOCR_BASE_URL,
+        );
         self
     }
 }
@@ -135,5 +218,22 @@ mod tests {
         assert_eq!(s.fix.concurrency, 1);
         assert_eq!(s.fix.author, "AutoPassDoc");
         assert!(s.fix.resolve_on_apply, "missing fields keep their defaults");
+        assert_eq!(s.kb, KbSettings::default());
+    }
+
+    #[test]
+    fn reads_kb_settings() {
+        let s: Settings = serde_json::from_str(
+            r#"{"roles": {}, "kb": {"parser": "paddleocr", "paddleocrBaseUrl": " http://ocr.local/ ", "mineruModel": ""}}"#,
+        )
+        .unwrap();
+        let s = s.normalized();
+        assert_eq!(s.kb.parser, ParserKind::Paddleocr);
+        assert_eq!(s.kb.paddleocr_base_url, "http://ocr.local");
+        assert_eq!(s.kb.mineru_model, "vlm");
+        assert_eq!(s.kb.paddleocr_model, "PaddleOCR-VL-1.6");
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["kb"]["parser"], "paddleocr");
+        assert_eq!(json["kb"]["paddleocrModel"], "PaddleOCR-VL-1.6");
     }
 }

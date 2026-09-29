@@ -34,6 +34,10 @@ use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use sha2::{Digest, Sha256};
 
 pub use error::{Error, Result};
+pub use parse::{
+    IMAGE_EXTENSIONS, MAX_FILE_BYTES, SUPPORTED_EXTENSIONS, expand_import_paths,
+    parse_external_markdown,
+};
 pub use types::*;
 
 use vector::VectorIndex;
@@ -41,6 +45,8 @@ use vector::VectorIndex;
 const DB_FILE: &str = "kb.sqlite";
 const FILES_DIR: &str = "files";
 const NO_TEXT_WARNING: &str = "文档中没有可检索的文字";
+/// [`KbDocument::parser`] of text read by this crate.
+pub const BUILTIN_PARSER: &str = "builtin";
 
 /// A knowledge base stored in one folder.
 ///
@@ -91,35 +97,103 @@ impl KnowledgeBase {
     /// reported as `unchanged`. A changed file at an already imported path
     /// replaces the old version and keeps its id; metadata the user corrected
     /// is kept, and its embeddings have to be computed again.
+    ///
+    /// PNG and JPEG files fail with [`Error::NeedsEnhanced`]; import them
+    /// with [`Self::import_parsed`].
     pub fn import_file(&mut self, path: &Path) -> Result<ImportReport> {
         let format = parse::format_of(path)?;
-        let bytes = std::fs::read(path).map_err(|source| Error::Read {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        let sha256: String = Sha256::digest(&bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let bytes = read_file(path)?;
+        self.import_bytes(path, format, &bytes, BUILTIN_PARSER, |b| {
+            parse::parse(format, b)
+        })
+    }
+
+    /// Imports a file whose text an online parser (MinerU, PaddleOCR) has
+    /// already turned into `markdown`: the original is copied into `files/`
+    /// as with [`Self::import_file`], and the lines come from
+    /// [`parse_external_markdown`]. Besides the built-in formats, PNG and
+    /// JPEG images are accepted (format `image`).
+    ///
+    /// Same content imported by the same parser is `unchanged`; content
+    /// imported before by another parser is parsed again and replaces that
+    /// document, keeping its id and corrected metadata.
+    pub fn import_parsed(
+        &mut self,
+        path: &Path,
+        markdown: &str,
+        parser: &str,
+    ) -> Result<ImportReport> {
+        let format = parse::format_of_parsed(path)?;
+        let bytes = read_file(path)?;
+        let parser = if parser.trim().is_empty() {
+            BUILTIN_PARSER
+        } else {
+            parser.trim()
+        };
+        self.import_bytes(path, format, &bytes, parser, |_| {
+            Ok(parse::parse_external(markdown))
+        })
+    }
+
+    /// The document already holding the same content as the file at `path`,
+    /// if any; its `parser` tells whether importing again would change it.
+    pub fn find_content(&self, path: &Path) -> Result<Option<KbDocument>> {
+        let sha256 = sha256_hex(&read_file(path)?);
+        let id: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM documents WHERE sha256 = ?1 ORDER BY id LIMIT 1",
+                [&sha256],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match id {
+            Some(id) => self.document(id),
+            None => Ok(None),
+        }
+    }
+
+    fn import_bytes(
+        &mut self,
+        path: &Path,
+        format: &str,
+        bytes: &[u8],
+        parser: &str,
+        parse: impl FnOnce(&[u8]) -> Result<parse::ParsedFile>,
+    ) -> Result<ImportReport> {
+        let sha256 = sha256_hex(bytes);
         let known = self
             .conn
             .query_row(
-                "SELECT id, (SELECT COUNT(*) FROM chunks WHERE doc_id = documents.id)
+                "SELECT id, parser, (SELECT COUNT(*) FROM chunks WHERE doc_id = documents.id)
                  FROM documents WHERE sha256 = ?1 ORDER BY id LIMIT 1",
                 [&sha256],
-                |r| Ok((r.get(0)?, r.get::<_, i64>(1)?)),
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
+                },
             )
             .optional()?;
-        if let Some((doc_id, chunks)) = known {
-            return Ok(ImportReport {
-                doc_id,
-                chunks: chunks as usize,
-                unchanged: true,
-                warnings: Vec::new(),
-            });
-        }
+        // The built-in parser never replaces an online parser's text.
+        let reparse = match &known {
+            Some((doc_id, known_parser, chunks))
+                if parser == BUILTIN_PARSER || known_parser == parser =>
+            {
+                return Ok(ImportReport {
+                    doc_id: *doc_id,
+                    chunks: *chunks as usize,
+                    unchanged: true,
+                    warnings: Vec::new(),
+                });
+            }
+            Some((doc_id, _, _)) => Some(*doc_id),
+            None => None,
+        };
 
-        let parsed = parse::parse(format, &bytes)?;
+        let parsed = parse(bytes)?;
         let mut chunked = chunking::chunk_lines(&parsed.lines);
         let mut warnings = parsed.warnings;
         if parsed.no_text {
@@ -142,7 +216,13 @@ impl KnowledgeBase {
         let file_name = path
             .file_name()
             .map_or_else(|| "document".into(), |n| n.to_string_lossy().into_owned());
-        let existing = self.existing_by_path(&original)?;
+        let existing = match self.existing_where("original_path", &original)? {
+            Some(old) => Some(old),
+            None => match reparse {
+                Some(id) => self.existing_where("id", &id)?,
+                None => None,
+            },
+        };
         if let Some(old) = existing.as_ref().filter(|old| old.meta_edited) {
             meta = old.meta.clone();
         }
@@ -176,7 +256,8 @@ impl KnowledgeBase {
         tx.execute(
             "UPDATE documents SET file_name = ?2, stored_name = ?3, format = ?4, sha256 = ?5,
              title = ?6, doc_number = ?7, issuer = ?8, date = ?9, char_count = ?10,
-             full_text = ?11, warnings = ?12, imported_at = ?13 WHERE id = ?1",
+             full_text = ?11, warnings = ?12, imported_at = ?13, original_path = ?14,
+             parser = ?15 WHERE id = ?1",
             params![
                 doc_id,
                 file_name,
@@ -191,13 +272,15 @@ impl KnowledgeBase {
                 chunked.full_text,
                 warnings.join("\n"),
                 now,
+                original,
+                parser,
             ],
         )?;
         let doc_tokens = doc_index_text(&meta, &file_name);
         let chunks = insert_chunks(&tx, doc_id, &chunked, &doc_tokens)?;
         let stored_path = files_dir.join(&stored_name);
         std::fs::create_dir_all(&files_dir)?;
-        std::fs::write(&stored_path, &bytes)?;
+        std::fs::write(&stored_path, bytes)?;
         if let Err(e) = tx.commit() {
             if existing.is_none() {
                 let _ = std::fs::remove_file(&stored_path);
@@ -216,13 +299,20 @@ impl KnowledgeBase {
         })
     }
 
-    fn existing_by_path(&self, original: &str) -> Result<Option<ExistingDoc>> {
+    /// The first document whose `column` equals `value`.
+    fn existing_where(
+        &self,
+        column: &str,
+        value: &dyn rusqlite::ToSql,
+    ) -> Result<Option<ExistingDoc>> {
         Ok(self
             .conn
             .query_row(
-                "SELECT id, stored_name, meta_edited, title, doc_number, issuer, date
-                 FROM documents WHERE original_path = ?1 ORDER BY id LIMIT 1",
-                [original],
+                &format!(
+                    "SELECT id, stored_name, meta_edited, title, doc_number, issuer, date
+                     FROM documents WHERE {column} = ?1 ORDER BY id LIMIT 1"
+                ),
+                [value],
                 |r| {
                     Ok(ExistingDoc {
                         id: r.get(0)?,
@@ -286,6 +376,7 @@ impl KnowledgeBase {
             stored_path: self.files_dir().join(r.get::<_, String>(3)?),
             original_path: PathBuf::from(r.get::<_, String>(2)?),
             format: r.get(4)?,
+            parser: r.get(14)?,
             sha256: r.get(5)?,
             char_count: r.get::<_, i64>(10)? as usize,
             warnings: warnings
@@ -297,6 +388,39 @@ impl KnowledgeBase {
             chunk_count: r.get::<_, i64>(13)? as usize,
             file_name,
             meta,
+        })
+    }
+
+    /// A document for the viewer: metadata, the full text as lines with
+    /// their heading levels, and the span of every child chunk.
+    pub fn document_view(&self, id: i64) -> Result<DocumentView> {
+        let document = self.document(id)?.ok_or(Error::DocumentNotFound(id))?;
+        let full_text = self.full_text(id)?.unwrap_or_default();
+        let lines = full_text
+            .split('\n')
+            .map(|text| ViewLine {
+                heading_level: chunking::detect_heading(text).and_then(|h| h.kind.rank()),
+                text: text.to_string(),
+            })
+            .collect();
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, char_start, char_end, heading_path FROM chunks
+             WHERE doc_id = ?1 ORDER BY char_start, id",
+        )?;
+        let chunks = stmt
+            .query_map([id], |r| {
+                Ok(ChunkSpan {
+                    chunk_id: r.get(0)?,
+                    char_start: r.get::<_, i64>(1)? as usize,
+                    char_end: r.get::<_, i64>(2)? as usize,
+                    heading_path: db::split_path(&r.get::<_, String>(3)?),
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(DocumentView {
+            document,
+            lines,
+            chunks,
         })
     }
 
@@ -658,7 +782,7 @@ impl KnowledgeBase {
 
 const DOCUMENT_SQL: &str = "SELECT d.id, d.file_name, d.original_path, d.stored_name, d.format,
     d.sha256, d.title, d.doc_number, d.issuer, d.date, d.char_count, d.warnings, d.imported_at,
-    (SELECT COUNT(*) FROM chunks c WHERE c.doc_id = d.id)
+    (SELECT COUNT(*) FROM chunks c WHERE c.doc_id = d.id), d.parser
     FROM documents d";
 
 struct MergedDocument {
@@ -831,6 +955,20 @@ fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
         .query_map([], |r| r.get::<_, String>(1))?
         .collect::<rusqlite::Result<_>>()?;
     Ok(columns)
+}
+
+fn read_file(path: &Path) -> Result<Vec<u8>> {
+    std::fs::read(path).map_err(|source| Error::Read {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn delete_chunk_rows(tx: &Transaction, doc_id: i64) -> Result<()> {

@@ -9,6 +9,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use models::{Client, ModelProfile, Provider, ThinkingLevel};
 
+use crate::enhanced::EnhancedOptions;
 use crate::error::{Error, Result};
 use crate::fix::Stored;
 use crate::providers;
@@ -56,6 +57,8 @@ pub struct Core {
     /// Set while chunks are being embedded.
     pub(crate) embedding: AtomicBool,
     pub(crate) web: crate::web::WebState,
+    /// Service addresses and waits for enhanced parsing.
+    pub(crate) enhanced: Mutex<EnhancedOptions>,
 }
 
 impl Core {
@@ -77,6 +80,7 @@ impl Core {
             kb: Mutex::new(None),
             embedding: AtomicBool::new(false),
             web: crate::web::WebState::new()?,
+            enhanced: Mutex::new(EnhancedOptions::default()),
         })
     }
 

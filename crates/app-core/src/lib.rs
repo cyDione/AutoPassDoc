@@ -5,6 +5,7 @@
 pub mod backup;
 pub mod core;
 pub mod dataset;
+pub mod enhanced;
 pub mod error;
 pub mod fix;
 pub mod knowledge;
