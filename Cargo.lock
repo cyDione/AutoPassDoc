@@ -95,9 +95,13 @@ name = "app-core"
 version = "0.1.0"
 dependencies = [
  "docx-engine",
+ "encoding_rs",
  "kb",
  "keyring",
  "models",
+ "percent-encoding",
+ "regex",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
