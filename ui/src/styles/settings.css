@@ -1,0 +1,366 @@
+/* Settings dialog tabs. */
+
+.dialog-tabs .side-action {
+  width: calc(100% - 16px);
+  font-size: 13.5px;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-section > .section-head {
+  margin-bottom: 0;
+}
+
+.settings-section > .section-head h3 {
+  font-size: 15px;
+}
+
+.hint {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+.hint.with-icon {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.hint.with-icon svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-3);
+}
+
+/* ---------- Providers ---------- */
+
+.provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.provider-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
+}
+
+.provider-item:hover {
+  border-color: var(--border-strong);
+}
+
+.provider-item.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.provider-item .icon {
+  flex: none;
+  color: var(--text-3);
+}
+
+.provider-item .main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.provider-item .name {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.provider-item .kind {
+  margin-left: 6px;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.provider-item .url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.provider-item .badge {
+  flex: none;
+}
+
+.form-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.form-title {
+  margin-bottom: 12px;
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  margin: 12px 0 8px -2px;
+  padding: 2px;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.disclosure:hover {
+  color: var(--text);
+}
+
+.model-list {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.model-list-head {
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.model-list-body {
+  max-height: 180px;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 12px;
+}
+
+.model-row + .model-row {
+  border-top: 1px dashed var(--border);
+}
+
+.model-row .id {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.model-row .ctx {
+  width: 40px;
+  text-align: right;
+  color: var(--text-3);
+}
+
+/* ---------- Roles ---------- */
+
+.role-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.role-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.role-name {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.test-result {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.test-result.ok {
+  color: var(--positive);
+}
+
+.test-result.failed {
+  color: var(--danger);
+}
+
+.test-summary {
+  margin-top: -4px;
+  padding: 6px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--positive-bg);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.test-summary.failed {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.role-pickers {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.6fr);
+  gap: 8px;
+}
+
+.model-picker {
+  position: relative;
+}
+
+.model-picker .input {
+  padding-right: 28px;
+}
+
+.model-picker-caret {
+  position: absolute;
+  right: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-3);
+  pointer-events: none;
+}
+
+.capability {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.capability span {
+  flex: 1;
+  min-width: 0;
+}
+
+.profile-editor {
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.profile-editor .form-actions {
+  margin-top: 12px;
+}
+
+.field-check {
+  align-self: end;
+  height: 32px;
+}
+
+.thinking-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12.5px;
+}
+
+.role-card .radio-group .field-label {
+  margin-right: 2px;
+}
+
+/* ---------- AI fix ---------- */
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.setting-row:last-child {
+  border-bottom: 0;
+}
+
+.setting-row.stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.setting-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.setting-label {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.setting-hint {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+.slider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.slider input {
+  width: 180px;
+  accent-color: var(--accent);
+}
+
+.slider-value {
+  width: 38px;
+  text-align: right;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.data-card .setting-hint {
+  margin: 6px 0 0;
+}
+
+.data-card .form-actions {
+  margin-top: 12px;
+}

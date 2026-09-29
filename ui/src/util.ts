@@ -16,10 +16,46 @@ export function formatChars(n: number): string {
   return n >= 10000 ? `${(n / 10000).toFixed(1)} 万字` : `${n} 字`;
 }
 
+const pad = (v: number) => String(v).padStart(2, "0");
+
 export function formatDate(iso: string | null): string {
   if (!iso) return "";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
-  const pad = (v: number) => String(v).padStart(2, "0");
   return `${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Unix seconds (as the Rust side stores times) → "2026-09-28" */
+export function formatDay(seconds: number): string {
+  const d = new Date(seconds * 1000);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** 0.864 → "86%" */
+export function percent(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+/** 131072 → "128K", 1000000 → "1M" */
+export function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${+(n / 1_048_576).toFixed(1)}M`;
+  if (n >= 1024) return `${Math.round(n / 1024)}K`;
+  return String(n);
+}
+
+export function formatNumber(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+/** Tauri rejects with plain strings; the demo with Errors. */
+export function errorMessage(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  return String(e);
+}
+
+/** True when a key press belongs to a text field rather than to the app. */
+export function isTyping(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.isContentEditable || target.matches("input, textarea, select");
 }

@@ -1,0 +1,489 @@
+/* Comment cards, AI fix results and the batch bar. */
+
+.panel-head {
+  align-items: center;
+}
+
+.panel-head .btn.sm {
+  margin: -2px 0;
+}
+
+.panel-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 12px 10px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 12.5px;
+}
+
+.panel-banner .link-btn {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+.batch-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.batch-bar .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  font-size: 12.5px;
+}
+
+.batch-bar .label {
+  font-weight: 600;
+}
+
+/* ---------- Card ---------- */
+
+.comment-meta .author-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 1px 4px;
+  margin: 0 -4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.comment-meta .author-btn:hover {
+  background: var(--hover);
+}
+
+.author-btn .alias {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+.author-btn .arrow {
+  flex: none;
+  color: var(--text-3);
+}
+
+.comment-meta .when {
+  white-space: nowrap;
+}
+
+.comment-meta .badge {
+  flex: none;
+}
+
+.resolve-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  height: 22px;
+  min-width: 22px;
+  justify-content: center;
+  padding: 0 4px;
+  margin-right: -4px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.resolve-btn:hover {
+  background: var(--hover);
+  color: var(--positive);
+}
+
+.resolve-btn.on {
+  padding: 0 8px 0 6px;
+  background: var(--positive-bg);
+  color: var(--positive);
+}
+
+.comment-card.done .comment-text,
+.comment-card.done .comment-quote {
+  opacity: 0.75;
+}
+
+.comment-card.done {
+  opacity: 1;
+}
+
+.card-actions {
+  display: flex;
+  margin-top: 10px;
+}
+
+/* ---------- Fix progress and result ---------- */
+
+.fix-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12.5px;
+}
+
+.stage-dots {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.stage-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.stage-dots i.done {
+  background: var(--accent);
+}
+
+.stage-dots i.now {
+  background: var(--accent);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.fix-failed {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 12.5px;
+  cursor: default;
+}
+
+.fix-failed span {
+  flex: 1;
+  padding-top: 3px;
+}
+
+.fix-applied {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--positive-bg);
+  color: var(--positive);
+  font-size: 12.5px;
+  font-weight: 500;
+  animation: fade-in 0.2s ease;
+}
+
+.fix-result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--border);
+  cursor: default;
+  font-size: 13px;
+}
+
+.fix-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fix-head .link-btn {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.fix-head .link-btn:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.diff {
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-family: var(--font-doc);
+  font-size: 14px;
+  line-height: 1.85;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff.unchanged {
+  color: var(--text-2);
+}
+
+.diff ins {
+  text-decoration: none;
+  background: var(--diff-ins-bg);
+  color: var(--diff-ins);
+  border-radius: 3px;
+  padding: 1px 0;
+}
+
+.diff del {
+  text-decoration: line-through;
+  text-decoration-color: var(--diff-del);
+  background: var(--diff-del-bg);
+  color: var(--diff-del);
+  border-radius: 3px;
+  padding: 1px 0;
+}
+
+.diff-gap {
+  display: inline-block;
+  margin: 0 3px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--active);
+  color: var(--text-3);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 18px;
+  vertical-align: 1px;
+  cursor: pointer;
+}
+
+.diff-gap:hover {
+  color: var(--text);
+}
+
+.fix-explanation {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.fix-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fix-edit .textarea {
+  font-family: var(--font-doc);
+  font-size: 14px;
+}
+
+.judge-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 11px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.judge-item {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) 36px auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.judge-item .label {
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.judge-item .bar {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--active);
+}
+
+.judge-item .fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--positive);
+}
+
+.judge-item.failed .fill {
+  background: var(--warn);
+}
+
+.judge-item .tick {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 1.5px;
+  margin-left: -0.75px;
+  background: var(--text-3);
+}
+
+.judge-item .pct {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
+
+.judge-item .must {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.judge-foot {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.cite-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cite-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cite-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.cite-chip .n {
+  flex: none;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.cite-chip .text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fix-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-3);
+}
+
+.fix-note svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.fix-note.warn {
+  color: var(--warn);
+}
+
+.fix-note.error {
+  color: var(--danger);
+}
+
+.fix-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  border-radius: var(--radius-sm);
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.fix-confirm .row {
+  display: flex;
+  gap: 6px;
+}
+
+.fix-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fix-unjudged {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* Paragraph flash after jumping from a pre-review result. */
+.doc-p.flash,
+.doc-h.flash {
+  animation: flash-block 1.6s ease;
+  border-radius: 4px;
+}
+
+@keyframes flash-block {
+  0%,
+  50% {
+    background: var(--comment-active);
+  }
+}
+
+:root[data-theme="word"] .fix-result {
+  border-top-style: dashed;
+}

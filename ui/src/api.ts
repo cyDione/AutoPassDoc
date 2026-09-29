@@ -255,84 +255,13 @@ async function tauriBackend(): Promise<Backend> {
 }
 
 /**
- * Browser-only backend for developing the UI without Tauri: serves a
- * generated sample report exported by `pnpm demo-data`.
+ * Browser-only backend for developing the UI without Tauri: serves a generated
+ * sample report exported by `pnpm demo-data` and fakes everything else in
+ * memory. Loaded lazily so it stays out of the desktop app.
  */
-function demoBackend(): Backend {
-  let blocks: Promise<BlockView[]> | null = null;
-  const loadBlocks = () => (blocks ??= fetch("/demo/blocks.json").then((r) => r.json()));
-  const open = async (): Promise<OpenedDoc> => {
-    const summary: Summary = await fetch("/demo/summary.json").then((r) => r.json());
-    await loadBlocks();
-    return { docId: 1, path: "示例/某市数字政府项目可研报告.docx", fileName: "某市数字政府项目可研报告.docx", summary };
-  };
-  return {
-    open,
-    pickAndOpen: open,
-    blocks: async (_docId, start, end) => (await loadBlocks()).slice(start, end),
-    async saveAs() {
-      return "示例/某市数字政府项目可研报告_AutoPassDoc.docx";
-    },
-    async close() {},
-    async initialFile() {
-      return null;
-    },
-    imageUrl: (_docId, relId) => `/demo/${relId}.png`,
-    onFileDrop: () => () => {},
-    ...unsupported(),
-  };
+async function demoBackend(): Promise<Backend> {
+  const { createDemoBackend } = await import("./demo");
+  return createDemoBackend();
 }
 
-/** Placeholder for features the browser demo does not implement yet. */
-function unsupported(): Omit<
-  Backend,
-  "open" | "pickAndOpen" | "blocks" | "saveAs" | "close" | "initialFile" | "imageUrl" | "onFileDrop"
-> {
-  const no = () => Promise.reject(new Error("演示模式不支持此功能"));
-  const off = () => () => {};
-  return {
-    docState: no,
-    summary: no,
-    undo: no,
-    redo: no,
-    save: no,
-    setCommentDone: no,
-    fixComment: no,
-    fixBatch: no,
-    onFixProgress: off,
-    applyFix: no,
-    rejectFix: no,
-    documentAuthors: no,
-    assignAuthor: no,
-    reviewers: no,
-    createReviewer: no,
-    updateReviewer: no,
-    deleteReviewer: no,
-    mergeReviewers: no,
-    reviewerProfile: no,
-    distillProfile: no,
-    reviewerCases: no,
-    preReview: no,
-    exportDataset: no,
-    settings: no,
-    saveSettings: no,
-    providers: no,
-    saveProvider: no,
-    deleteProvider: no,
-    fetchModels: no,
-    providerModels: no,
-    setModelProfile: no,
-    testRole: no,
-    kbDocuments: no,
-    kbStats: no,
-    kbImport: no,
-    kbRemove: no,
-    kbUpdateMeta: no,
-    kbSearch: no,
-    kbEmbed: no,
-    onKbProgress: off,
-    openPath: no,
-  };
-}
-
-export const backend: Promise<Backend> = isTauri ? tauriBackend() : Promise.resolve(demoBackend());
+export const backend: Promise<Backend> = isTauri ? tauriBackend() : demoBackend();

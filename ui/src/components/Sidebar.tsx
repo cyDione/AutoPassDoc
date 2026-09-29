@@ -1,17 +1,27 @@
 import { memo, useEffect, useRef } from "react";
-import { FileText, FolderOpen, Monitor, Moon, PanelLeftClose, Sun, Type } from "lucide-react";
+import { FileText, FolderOpen, Library, Monitor, Moon, PanelLeftClose, Settings, Sun, Type, Users } from "lucide-react";
+import type { Theme } from "../hooks/useTheme";
 import type { OpenedDoc, OutlineItem } from "../types";
 import { formatChars } from "../util";
 
-export type Theme = "light" | "dark" | "word" | "system";
+export type Page = "doc" | "kb" | "reviewers";
+
+const PAGES = [
+  ["doc", FileText, "文档"],
+  ["kb", Library, "知识库"],
+  ["reviewers", Users, "审稿人"],
+] as const;
 
 interface Props {
   doc: OpenedDoc | null;
   /** Index into the outline of the section at the top of the document view. */
   currentOutline: number;
+  page: Page;
   theme: Theme;
+  onNavigate: (page: Page) => void;
   onThemeChange: (theme: Theme) => void;
   onOpen: () => void;
+  onOpenSettings: () => void;
   onOutlineClick: (item: OutlineItem) => void;
   onCollapse: () => void;
 }
@@ -19,9 +29,12 @@ interface Props {
 export const Sidebar = memo(function Sidebar({
   doc,
   currentOutline: current,
+  page,
   theme,
+  onNavigate,
   onThemeChange,
   onOpen,
+  onOpenSettings,
   onOutlineClick,
   onCollapse,
 }: Props) {
@@ -43,8 +56,15 @@ export const Sidebar = memo(function Sidebar({
       </div>
       <button className="side-action" onClick={onOpen}>
         <FolderOpen size={16} /> 打开文档
-        <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--text-3)" }}>Ctrl+O</span>
+        <span className="shortcut">Ctrl+O</span>
       </button>
+      <nav className="side-nav">
+        {PAGES.map(([key, Icon, label]) => (
+          <button key={key} className={`side-action${page === key ? " on" : ""}`} onClick={() => onNavigate(key)}>
+            <Icon size={16} /> {label}
+          </button>
+        ))}
+      </nav>
 
       {doc && (
         <>
@@ -91,6 +111,10 @@ export const Sidebar = memo(function Sidebar({
             <Icon size={15} />
           </button>
         ))}
+        <span className="footer-sep" />
+        <button className="icon-btn" title="设置" onClick={onOpenSettings}>
+          <Settings size={15} />
+        </button>
       </div>
     </>
   );

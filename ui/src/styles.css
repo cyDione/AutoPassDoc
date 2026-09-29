@@ -20,7 +20,19 @@
   --ins-bg: rgba(47, 125, 79, 0.1);
   --del: #b4452f;
   --positive: #3f7f5a;
+  --positive-bg: rgba(63, 127, 90, 0.12);
+  --warn: #9a620f;
+  --warn-bg: rgba(214, 150, 40, 0.15);
+  --danger: #b4452f;
+  --danger-bg: rgba(180, 69, 47, 0.1);
+  --diff-ins: #1f6b3f;
+  --diff-ins-bg: rgba(47, 125, 79, 0.15);
+  --diff-del: #a33a26;
+  --diff-del-bg: rgba(180, 69, 47, 0.12);
+  --on-accent: #ffffff;
+  --overlay: rgba(31, 30, 29, 0.3);
   --shadow: 0 1px 2px rgba(31, 30, 29, 0.05), 0 4px 16px rgba(31, 30, 29, 0.06);
+  --shadow-lg: 0 4px 12px rgba(31, 30, 29, 0.08), 0 16px 48px rgba(31, 30, 29, 0.14);
   --radius: 10px;
   --radius-sm: 7px;
   --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", "PingFang SC",
@@ -28,6 +40,7 @@
   --font-doc: "Source Han Serif SC", "Noto Serif CJK SC", "Noto Serif SC", "Songti SC", "SimSun",
     "STSong", Georgia, serif;
   --font-heading: "Source Han Sans SC", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
   color-scheme: light;
 }
 
@@ -52,7 +65,19 @@
   --ins-bg: rgba(124, 197, 150, 0.12);
   --del: #ec8d78;
   --positive: #7cc596;
+  --positive-bg: rgba(124, 197, 150, 0.14);
+  --warn: #e6b566;
+  --warn-bg: rgba(230, 181, 102, 0.14);
+  --danger: #ec8d78;
+  --danger-bg: rgba(236, 141, 120, 0.14);
+  --diff-ins: #93d9ad;
+  --diff-ins-bg: rgba(124, 197, 150, 0.17);
+  --diff-del: #f2a592;
+  --diff-del-bg: rgba(236, 141, 120, 0.17);
+  --on-accent: #ffffff;
+  --overlay: rgba(0, 0, 0, 0.5);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 20px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.3), 0 16px 48px rgba(0, 0, 0, 0.45);
   color-scheme: dark;
 }
 
@@ -78,7 +103,19 @@
   --ins-bg: transparent;
   --del: #c4314b;
   --positive: #107c10;
+  --positive-bg: #dff6dd;
+  --warn: #8a5300;
+  --warn-bg: #fff4ce;
+  --danger: #a4262c;
+  --danger-bg: #fde7e9;
+  --diff-ins: #0b6a0b;
+  --diff-ins-bg: #dff6dd;
+  --diff-del: #a4262c;
+  --diff-del-bg: #fde7e9;
+  --on-accent: #ffffff;
+  --overlay: rgba(0, 0, 0, 0.4);
   --shadow: 0 1.6px 3.6px rgba(0, 0, 0, 0.13), 0 0.3px 0.9px rgba(0, 0, 0, 0.11);
+  --shadow-lg: 0 6.4px 14.4px rgba(0, 0, 0, 0.13), 0 1.2px 3.6px rgba(0, 0, 0, 0.11);
   --topbar-bg: #2b579a;
   --topbar-text: #ffffff;
   --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", -apple-system,
