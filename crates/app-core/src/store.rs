@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::settings::Settings;
 
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE providers (
     id TEXT PRIMARY KEY,
@@ -71,7 +72,18 @@ CREATE TABLE profiles (
     case_count INTEGER NOT NULL,
     created_at INTEGER NOT NULL
 );
-"#];
+"#,
+    r#"
+CREATE TABLE proofread_cache (
+    doc_key TEXT NOT NULL,
+    para_hash TEXT NOT NULL,
+    checks TEXT NOT NULL,
+    result TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (doc_key, para_hash, checks)
+);
+"#,
+];
 
 pub fn now() -> i64 {
     SystemTime::now()
@@ -634,6 +646,74 @@ impl Store {
             .optional()?)
     }
 
+    // Proofreading cache
+
+    /// Cached proofreading results for these paragraph hashes, newer than
+    /// `since` (unix seconds): hash → result JSON.
+    pub fn proofread_cached(
+        &self,
+        doc_key: &str,
+        hashes: &[String],
+        checks: &str,
+        since: i64,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT result FROM proofread_cache
+             WHERE doc_key = ?1 AND para_hash = ?2 AND checks = ?3 AND created_at >= ?4",
+        )?;
+        let mut out = std::collections::HashMap::new();
+        for h in hashes {
+            if out.contains_key(h) {
+                continue;
+            }
+            if let Some(result) = stmt
+                .query_row(params![doc_key, h, checks, since], |r| {
+                    r.get::<_, String>(0)
+                })
+                .optional()?
+            {
+                out.insert(h.clone(), result);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Stores proofreading results: (paragraph hash, result JSON).
+    pub fn save_proofread_cache(
+        &self,
+        doc_key: &str,
+        checks: &str,
+        entries: &[(String, String)],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO proofread_cache (doc_key, para_hash, checks, result, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(doc_key, para_hash, checks)
+                 DO UPDATE SET result = excluded.result, created_at = excluded.created_at",
+            )?;
+            let t = now();
+            for (hash, result) in entries {
+                stmt.execute(params![doc_key, hash, checks, result, t])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Forgets a document's cached proofreading results (all documents when
+    /// `doc_key` is `None`).
+    pub fn clear_proofread_cache(&self, doc_key: Option<&str>) -> Result<()> {
+        match doc_key {
+            Some(k) => self
+                .conn
+                .execute("DELETE FROM proofread_cache WHERE doc_key = ?1", [k])?,
+            None => self.conn.execute("DELETE FROM proofread_cache", [])?,
+        };
+        Ok(())
+    }
+
     pub fn add_profile(
         &self,
         reviewer_id: i64,
@@ -731,6 +811,52 @@ mod tests {
         store.delete_reviewer(a.id).unwrap();
         assert!(store.aliases().unwrap().is_empty());
         assert_eq!(store.decided_cases().unwrap()[0].reviewer_id, None);
+    }
+
+    #[test]
+    fn proofread_cache_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        let hashes = vec!["h1".to_string(), "h2".to_string()];
+        assert!(
+            store
+                .proofread_cached("doc", &hashes, "typo", 0)
+                .unwrap()
+                .is_empty()
+        );
+        store
+            .save_proofread_cache("doc", "typo", &[("h1".into(), "{\"a\":1}".into())])
+            .unwrap();
+        store
+            .save_proofread_cache("doc", "typo", &[("h1".into(), "{\"a\":2}".into())])
+            .unwrap();
+        let got = store.proofread_cached("doc", &hashes, "typo", 0).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got["h1"], "{\"a\":2}");
+        assert!(
+            store
+                .proofread_cached("doc", &hashes, "format", 0)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .proofread_cached("other", &hashes, "typo", 0)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .proofread_cached("doc", &hashes, "typo", now() + 10)
+                .unwrap()
+                .is_empty()
+        );
+        store.clear_proofread_cache(Some("doc")).unwrap();
+        assert!(
+            store
+                .proofread_cached("doc", &hashes, "typo", 0)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

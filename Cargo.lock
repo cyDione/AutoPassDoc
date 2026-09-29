@@ -97,6 +97,7 @@ dependencies = [
  "chrono",
  "docx-engine",
  "encoding_rs",
+ "futures",
  "kb",
  "keyring",
  "models",

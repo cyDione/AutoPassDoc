@@ -11,6 +11,7 @@ pub mod fix;
 pub mod knowledge;
 pub mod prereview;
 pub mod profiles;
+pub mod proofread;
 pub mod providers;
 pub mod reviewers;
 pub mod secrets;

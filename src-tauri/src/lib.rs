@@ -6,6 +6,7 @@ mod ai;
 mod data;
 mod documents;
 mod knowledge;
+mod proofread;
 
 use std::fmt::Display;
 use std::sync::Arc;
@@ -127,6 +128,10 @@ pub fn run() {
             data::import_backup,
             data::app_info,
             data::check_update,
+            proofread::proofread,
+            proofread::cancel_proofread,
+            proofread::apply_proof_issues,
+            proofread::clear_proofread_cache,
             knowledge::web_search,
             knowledge::web_download_to_kb,
             knowledge::kb_count_import,
