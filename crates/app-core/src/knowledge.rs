@@ -75,7 +75,7 @@ pub struct Found {
 
 impl Core {
     /// The knowledge base, opened on first use in `<data dir>/kb`.
-    fn kb(&self) -> Result<MutexGuard<'_, Option<KnowledgeBase>>> {
+    pub(crate) fn kb(&self) -> Result<MutexGuard<'_, Option<KnowledgeBase>>> {
         let mut guard = self.kb.lock().unwrap();
         if guard.is_none() {
             *guard = Some(KnowledgeBase::open(&self.data_dir().join("kb"))?);
