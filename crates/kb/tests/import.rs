@@ -183,20 +183,60 @@ fn imports_docx_with_styles_revisions_and_tables() {
     assert_eq!(doc.meta.issuer.as_deref(), Some("某某市数据局"));
     assert_eq!(doc.meta.date.as_deref(), Some("2024-06-01"));
 
-    // Line i of the full text is paragraph i (table cells included); deleted
-    // text is gone and soft breaks became spaces.
+    // A paragraph is one line and a table row is one line; deleted text is
+    // gone and soft breaks became spaces.
     let full = kb.full_text(doc.id).unwrap().unwrap();
     let lines: Vec<&str> = full.split('\n').collect();
-    assert_eq!(lines.len(), 11);
+    assert_eq!(lines.len(), 10);
     assert_eq!(lines[3], "第一条 为了加强数据安全管理，制定本办法。");
     assert!(lines[4].starts_with("第二条 本办法适用于本市行政区域内的数据处理活动。 数据处理者"));
-    assert_eq!(lines[6], "核心数据实行更加严格的管理制度");
+    assert_eq!(lines[5], "数据类别 | 核心数据实行更加严格的管理制度");
 
     let hits = kb.search(&query("第一条")).unwrap();
     assert_eq!(hits[0].heading_path, ["第一章 总则", "第一条"]);
     let hits = kb.search(&query("核心数据")).unwrap();
     assert!(hits[0].text.contains("核心数据实行更加严格的管理制度"));
     assert_offsets(&kb, doc.id);
+}
+
+fn tc(text: &str, props: &str) -> String {
+    format!("<w:tc><w:tcPr>{props}</w:tcPr>{}</w:tc>", p(None, &r(text)))
+}
+
+#[test]
+fn tables_keep_column_headers_on_every_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let row = |cells: &[String]| format!("<w:tr>{}</w:tr>", cells.concat());
+    let table = format!(
+        "<w:tbl>{}{}{}{}</w:tbl>",
+        row(&[tc("类别", ""), tc("项目", ""), tc("金额（万元）", "")]),
+        row(&[tc("建设投资", r#"<w:vMerge w:val="restart"/>"#), tc("硬件设备购置", ""), tc("1260", "")]),
+        row(&[tc("", "<w:vMerge/>"), tc("软件开发", ""), tc("1720", "")]),
+        row(&[tc("合计", r#"<w:gridSpan w:val="2"/>"#), tc("3850", "")]),
+    );
+    let body = [
+        p(Some("1"), &r("第一章 投资估算")),
+        p(None, &r("表1 项目投资估算表")),
+        table,
+    ]
+    .concat();
+    let path = write(dir.path(), "估算.docx", docx(&body));
+    let mut kb = kb_in(dir.path());
+    let report = kb.import_file(&path).unwrap();
+    let full = kb.full_text(report.doc_id).unwrap().unwrap();
+    let lines: Vec<&str> = full.split('\n').collect();
+    assert_eq!(
+        lines[2..],
+        [
+            "表格列：类别 | 项目 | 金额（万元）",
+            "类别：建设投资；项目：硬件设备购置；金额（万元）：1260",
+            "类别：建设投资；项目：软件开发；金额（万元）：1720",
+            "类别：合计；项目：合计；金额（万元）：3850",
+        ]
+    );
+    let hits = kb.search(&query("软件开发金额")).unwrap();
+    assert!(hits[0].text.contains("项目：软件开发；金额（万元）：1720"));
+    assert_offsets(&kb, report.doc_id);
 }
 
 #[test]

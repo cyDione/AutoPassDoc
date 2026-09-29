@@ -100,45 +100,121 @@ fn parse_docx(bytes: &[u8]) -> Result<ParsedFile> {
     let doc = docx_engine::Document::from_bytes(bytes.to_vec())
         .map_err(|e| Error::Parse(e.to_string()))?;
     let mut title_hint = None;
-    let lines = doc
-        .paragraphs
-        .iter()
-        .enumerate()
-        .map(|(i, p)| {
-            // Soft line breaks become spaces so line i stays paragraph i.
-            let text = p.accepted_text().replace(['\n', '\r'], " ");
-            let is_title = p.style_id.as_deref().is_some_and(|id| {
-                id.eq_ignore_ascii_case("title")
-                    || doc
-                        .style_name(id)
-                        .is_some_and(|n| n.eq_ignore_ascii_case("title") || n == "标题")
-            });
-            if is_title && title_hint.is_none() && !text.trim().is_empty() {
-                title_hint = Some(text.trim().to_string());
-            }
-            let display = doc
-                .list_label(i)
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .map(|label| {
-                    let sep = if label.ends_with(char::is_alphanumeric) {
-                        " "
-                    } else {
-                        ""
-                    };
-                    format!("{label}{sep}{}", text.trim_start())
+    let mut lines = Vec::new();
+    for block in &doc.blocks {
+        match block {
+            docx_engine::Block::Paragraph(i) => {
+                let i = *i;
+                let p = &doc.paragraphs[i];
+                // Soft line breaks become spaces so a paragraph stays one line.
+                let text = p.accepted_text().replace(['\n', '\r'], " ");
+                let is_title = p.style_id.as_deref().is_some_and(|id| {
+                    id.eq_ignore_ascii_case("title")
+                        || doc
+                            .style_name(id)
+                            .is_some_and(|n| n.eq_ignore_ascii_case("title") || n == "标题")
                 });
-            SourceLine {
-                style_level: if is_title { None } else { doc.heading_level(i) },
-                text,
-                display,
+                if is_title && title_hint.is_none() && !text.trim().is_empty() {
+                    title_hint = Some(text.trim().to_string());
+                }
+                let display = doc
+                    .list_label(i)
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(|label| {
+                        let sep = if label.ends_with(char::is_alphanumeric) {
+                            " "
+                        } else {
+                            ""
+                        };
+                        format!("{label}{sep}{}", text.trim_start())
+                    });
+                lines.push(SourceLine {
+                    style_level: if is_title { None } else { doc.heading_level(i) },
+                    text,
+                    display,
+                });
             }
-        })
-        .collect();
+            docx_engine::Block::Table(t) => {
+                lines.extend(table_lines(&doc, t).into_iter().map(SourceLine::new));
+            }
+        }
+    }
     Ok(ParsedFile {
         title_hint,
         ..ParsedFile::new(lines)
     })
+}
+
+/// A table as text a search can use: one line per row, each value labelled
+/// with its column header ("项目：硬件购置；金额（万元）：1260"), so a chunk
+/// holding any rows still says what the numbers mean. Merged cells repeat
+/// their text in every row and column they cover.
+fn table_lines(doc: &docx_engine::Document, table: &docx_engine::Table) -> Vec<String> {
+    let cell_text = |c: &docx_engine::TableCell| {
+        c.paragraphs
+            .iter()
+            .map(|&i| doc.paragraphs[i].accepted_text().replace(['\n', '\r'], " "))
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut grid: Vec<Vec<String>> = Vec::new();
+    for row in &table.rows {
+        let mut out = Vec::new();
+        for cell in row {
+            let col = out.len();
+            let text = if cell.v_merge == Some(false) {
+                grid.last()
+                    .and_then(|above: &Vec<String>| above.get(col).cloned())
+                    .unwrap_or_default()
+            } else {
+                cell_text(cell)
+            };
+            for _ in 0..cell.grid_span.max(1) {
+                out.push(text.clone());
+            }
+        }
+        grid.push(out);
+    }
+    grid.retain(|r| r.iter().any(|c| !c.is_empty()));
+    let columns = grid.iter().map(Vec::len).max().unwrap_or(0);
+    // Plain rows when there is no header to label values with.
+    if grid.len() < 2 || columns < 2 {
+        return grid.iter().map(|r| join_distinct(r, " | ")).collect();
+    }
+    let header = &grid[0];
+    let mut out = vec![format!("表格列：{}", join_distinct(header, " | "))];
+    for row in &grid[1..] {
+        let mut parts: Vec<String> = Vec::new();
+        for (col, value) in row.iter().enumerate() {
+            let name = header.get(col).map_or("", String::as_str);
+            let part = match (name.is_empty() || name == value, value.is_empty()) {
+                (_, true) => continue,
+                (true, false) => value.clone(),
+                (false, false) => format!("{name}：{value}"),
+            };
+            if parts.last() != Some(&part) {
+                parts.push(part);
+            }
+        }
+        if !parts.is_empty() {
+            out.push(parts.join("；"));
+        }
+    }
+    out
+}
+
+/// Joins non-empty cells, dropping repeats left by merged cells.
+fn join_distinct(cells: &[String], sep: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    for c in cells {
+        if !c.is_empty() && kept.last() != Some(&c.as_str()) {
+            kept.push(c);
+        }
+    }
+    kept.join(sep)
 }
 
 static MD_HEADING: LazyLock<Regex> =

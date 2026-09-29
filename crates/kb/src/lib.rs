@@ -11,8 +11,8 @@
 //!
 //! Char offsets ([`Hit::char_start`], [`Hit::char_end`]) count Unicode scalar
 //! values in the document's full text ([`KnowledgeBase::full_text`]), which
-//! is the document's lines joined with `\n`; for .docx, line `i` is the
-//! accepted text of paragraph `i`.
+//! is the document's lines joined with `\n`; for .docx, a paragraph is one
+//! line and a table is one line per row, each value labelled with its column.
 
 pub mod chunking;
 mod db;
