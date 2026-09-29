@@ -1,63 +1,55 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { FolderOpen, MessageSquareText, PanelLeftOpen, Save } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FolderOpen } from "lucide-react";
 import { backend as backendPromise, type Backend } from "./api";
 import { CommentsPanel } from "./components/CommentsPanel";
 import { DocumentView, type ScrollTarget } from "./components/DocumentView";
-import { Sidebar, type Theme } from "./components/Sidebar";
-import type { CommentView, OpenedDoc, OutlineItem } from "./types";
-import { formatChars } from "./util";
-
-function readTheme(): Theme {
-  try {
-    const t = localStorage.getItem("theme");
-    if (t === "light" || t === "dark" || t === "word" || t === "system") return t;
-  } catch {
-    /* storage unavailable */
-  }
-  return "system";
-}
-
-function useTheme(): [Theme, (t: Theme) => void] {
-  const [theme, setTheme] = useState<Theme>(readTheme);
-  useEffect(() => {
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => {
-      const resolved = theme === "system" ? (media.matches ? "dark" : "light") : theme;
-      document.documentElement.dataset.theme = resolved;
-    };
-    apply();
-    try {
-      localStorage.setItem("theme", theme);
-    } catch {
-      /* storage unavailable */
-    }
-    media.addEventListener("change", apply);
-    return () => media.removeEventListener("change", apply);
-  }, [theme]);
-  return [theme, setTheme];
-}
+import type { Section } from "./components/reviewers/PreReviewCard";
+import { SettingsDialog, type SettingsTab } from "./components/settings/SettingsDialog";
+import { Sidebar, type Page } from "./components/Sidebar";
+import { TopBar } from "./components/TopBar";
+import { useDocumentSession } from "./hooks/useDocumentSession";
+import { useTheme } from "./hooks/useTheme";
+import { KnowledgeBasePage, type DroppedFiles } from "./pages/KnowledgeBasePage";
+import { ReviewersPage } from "./pages/ReviewersPage";
+import type { CommentView, OpenedDoc, OutlineItem, Settings } from "./types";
+import { errorMessage, isTyping } from "./util";
 
 interface Toast {
   text: string;
   error?: boolean;
 }
 
+const PAGE_TITLE: Record<Page, string | null> = { doc: null, kb: "知识库", reviewers: "审稿人" };
+
 export default function App() {
   const [backend, setBackend] = useState<Backend | null>(null);
-  const [doc, setDoc] = useState<OpenedDoc | null>(null);
-  const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
+  const notify = useCallback((text: string, error?: boolean) => setToast({ text, error }), []);
+  const { doc, docState, version, authors, setAuthors, loading, load, edit, undo, redo, save, saveAs } = useDocumentSession(backend, notify);
   const [theme, setTheme] = useTheme();
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
+  const [page, setPage] = useState<Page>("doc");
+  /** Pages stay mounted after their first visit so running imports keep reporting progress. */
+  const [visited, setVisited] = useState<ReadonlySet<Page>>(() => new Set(["doc"]));
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [panelOpen, setPanelOpen] = useState(true);
   const [activeCommentId, setActiveCommentId] = useState<string | null>(null);
   const [target, setTarget] = useState<ScrollTarget | null>(null);
   const [topBlock, setTopBlock] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [kbDrop, setKbDrop] = useState<DroppedFiles | null>(null);
 
   useEffect(() => {
     backendPromise.then(setBackend);
   }, []);
+
+  useEffect(() => {
+    backend
+      ?.settings()
+      .then(setSettings)
+      .catch((e) => notify(`无法读取设置：${errorMessage(e)}`, true));
+  }, [backend, notify]);
 
   useEffect(() => {
     if (!toast) return;
@@ -65,69 +57,77 @@ export default function App() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  const load = useCallback(
+  const navigate = useCallback((next: Page) => {
+    setPage(next);
+    setVisited((v) => (v.has(next) ? v : new Set(v).add(next)));
+  }, []);
+
+  const openDoc = useCallback(
     async (open: () => Promise<OpenedDoc | null>) => {
-      setLoading(true);
-      try {
-        const next = await open();
-        if (!next) return;
-        if (doc && backend) void backend.close(doc.docId);
-        setDoc(next);
-        setActiveCommentId(null);
-        setTarget(null);
-        setTopBlock(0);
-      } catch (e) {
-        setToast({ text: `无法打开文档：${String(e)}`, error: true });
-      } finally {
-        setLoading(false);
-      }
+      if (!(await load(open))) return;
+      setActiveCommentId(null);
+      setTarget(null);
+      setTopBlock(0);
+      navigate("doc");
     },
-    [backend, doc],
+    [load, navigate],
   );
 
-  const openPicker = useCallback(() => backend && load(() => backend.pickAndOpen()), [backend, load]);
-
-  const saveAs = useCallback(async () => {
-    if (!backend || !doc) return;
-    try {
-      const path = await backend.saveAs(doc.docId);
-      if (path) setToast({ text: `已另存为 ${path}` });
-    } catch (e) {
-      setToast({ text: `保存失败：${String(e)}`, error: true });
-    }
-  }, [backend, doc]);
+  const openPicker = useCallback(() => backend && openDoc(() => backend.pickAndOpen()), [backend, openDoc]);
 
   useEffect(() => {
     if (!backend) return;
     void backend.initialFile().then((path) => {
-      if (path) void load(() => backend.open(path));
+      if (path) void openDoc(() => backend.open(path));
     });
     // Only on startup.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backend]);
 
+  const pageRef = useRef(page);
+  useEffect(() => {
+    pageRef.current = page;
+  }, [page]);
+
   useEffect(() => {
     if (!backend) return;
     return backend.onFileDrop((paths) => {
+      if (pageRef.current === "kb") {
+        setKbDrop({ paths, nonce: Date.now() });
+        return;
+      }
       const path = paths.find((p) => p.toLowerCase().endsWith(".docx")) ?? paths[0];
-      if (path) void load(() => backend.open(path));
+      if (path) void openDoc(() => backend.open(path));
     }, setDragging);
-  }, [backend, load]);
+  }, [backend, openDoc]);
 
+  // Shortcuts read the latest state through a ref so the listener is added once.
+  const shortcuts = useRef({ openPicker, save, saveAs, undo, redo, page, docState, settingsOpen: false });
+  useEffect(() => {
+    shortcuts.current = { openPicker, save, saveAs, undo, redo, page, docState, settingsOpen: settingsTab !== null };
+  });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
-      if (e.key.toLowerCase() === "o") {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const s = shortcuts.current;
+      const key = e.key.toLowerCase();
+      if (s.settingsOpen) return;
+      if (key === "o") {
         e.preventDefault();
-        void openPicker();
-      } else if (e.key.toLowerCase() === "s" && e.shiftKey) {
+        void s.openPicker();
+      } else if (key === "s") {
         e.preventDefault();
-        void saveAs();
+        void (e.shiftKey ? s.saveAs() : s.save());
+      } else if ((key === "z" || key === "y") && s.page === "doc" && !isTyping(e.target)) {
+        e.preventDefault();
+        const redoing = key === "y" || e.shiftKey;
+        if (redoing && s.docState?.redoLabel) void s.redo();
+        else if (!redoing && s.docState?.undoLabel) void s.undo();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [openPicker, saveAs]);
+  }, []);
 
   const commentsById = useMemo(() => new Map(doc?.summary.comments.map((c) => [c.id, c]) ?? []), [doc]);
 
@@ -150,31 +150,73 @@ export default function App() {
     [commentsById],
   );
 
-  const onOutlineClick = useCallback((item: OutlineItem) => {
-    setTarget({ blockIndex: item.blockIndex, nonce: Date.now() });
-  }, []);
+  const onOutlineClick = useCallback(
+    (item: OutlineItem) => {
+      navigate("doc");
+      setTarget({ blockIndex: item.blockIndex, nonce: Date.now() });
+    },
+    [navigate],
+  );
 
   const onOpen = useCallback(() => void openPicker(), [openPicker]);
   const collapseSidebar = useCallback(() => setSidebarOpen(false), []);
+  const openSidebar = useCallback(() => setSidebarOpen(true), []);
+  const togglePanel = useCallback(() => setPanelOpen((v) => !v), []);
+  const openSettings = useCallback(() => setSettingsTab("providers"), []);
+  const openRoleSettings = useCallback(() => setSettingsTab("roles"), []);
+  const closeSettings = useCallback(() => setSettingsTab(null), []);
+
+  const outline = doc?.summary.outline;
+  const paragraphCount = doc?.summary.paragraphCount ?? 0;
 
   // The heading whose section is at the top of the document view (binary search).
   const currentOutline = useMemo(() => {
-    const outline = doc?.summary.outline ?? [];
+    const items = outline ?? [];
     let lo = 0;
-    let hi = outline.length - 1;
+    let hi = items.length - 1;
     let found = -1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
-      if (outline[mid].blockIndex <= topBlock) {
+      if (items[mid].blockIndex <= topBlock) {
         found = mid;
         lo = mid + 1;
       } else hi = mid - 1;
     }
     return found;
-  }, [doc, topBlock]);
+  }, [outline, topBlock]);
 
-  const topLevelComments = doc?.summary.comments.filter((c) => !c.parentId) ?? [];
-  const openComments = topLevelComments.filter((c) => !c.done).length;
+  // From the current heading to the next heading of the same or a higher level.
+  const section = useMemo((): Section | null => {
+    if (!outline) return null;
+    if (currentOutline < 0) return { start: 0, end: outline[0]?.paragraphIndex ?? paragraphCount, title: "文档开头" };
+    const head = outline[currentOutline];
+    const next = outline.slice(currentOutline + 1).find((o) => o.level <= head.level);
+    return { start: head.paragraphIndex, end: next?.paragraphIndex ?? paragraphCount, title: head.text };
+  }, [outline, paragraphCount, currentOutline]);
+
+  // Pre-review results name paragraphs; find the block that holds one (blocks never come after their paragraphs).
+  const jumpToParagraph = useCallback(
+    async (paragraphIndex: number) => {
+      if (!backend || !doc) return;
+      const heading = [...doc.summary.outline].reverse().find((o) => o.paragraphIndex <= paragraphIndex);
+      const from = heading?.blockIndex ?? 0;
+      try {
+        const blocks = await backend.blocks(doc.docId, from, Math.min(doc.summary.blockCount, paragraphIndex + 1));
+        const block = blocks.find((b) =>
+          b.kind === "paragraph"
+            ? b.paragraph.index === paragraphIndex
+            : b.rows.some((row) => row.some((cell) => cell.paragraphs.some((p) => p.index === paragraphIndex))),
+        );
+        navigate("doc");
+        setTarget({ blockIndex: block?.index ?? from, paragraphIndex, nonce: Date.now() });
+      } catch (e) {
+        notify(`无法定位段落：${errorMessage(e)}`, true);
+      }
+    },
+    [backend, doc, navigate, notify],
+  );
+
+  const onPage = page === "doc";
 
   return (
     <div className="app">
@@ -182,89 +224,108 @@ export default function App() {
         <Sidebar
           doc={doc}
           currentOutline={currentOutline}
+          page={page}
           theme={theme}
+          onNavigate={navigate}
           onThemeChange={setTheme}
           onOpen={onOpen}
+          onOpenSettings={openSettings}
           onOutlineClick={onOutlineClick}
           onCollapse={collapseSidebar}
         />
       </aside>
 
       <main className="main">
-        <header className="topbar">
-          {!sidebarOpen && (
-            <button className="icon-btn" title="展开侧边栏" onClick={() => setSidebarOpen(true)}>
-              <PanelLeftOpen size={17} />
-            </button>
-          )}
-          {doc ? (
-            <div className="title">
-              <span className="name">{doc.fileName}</span>
-              <span className="meta">
-                {formatChars(doc.summary.charCount)} · {topLevelComments.length} 条批注，{openComments} 条未解决
-              </span>
-            </div>
-          ) : (
-            <div className="title">
-              <span className="name">AutoPassDoc</span>
-            </div>
-          )}
-          <span className="spacer" />
-          {doc && (
-            <>
-              <button className="btn" onClick={() => void saveAs()} title="另存为（Ctrl+Shift+S）">
-                <Save size={15} /> 另存为
-              </button>
-              <button
-                className={`icon-btn${panelOpen ? " on" : ""}`}
-                title={panelOpen ? "隐藏批注" : "显示批注"}
-                onClick={() => setPanelOpen((v) => !v)}
-              >
-                <MessageSquareText size={17} />
-              </button>
-            </>
-          )}
-        </header>
+        <TopBar
+          doc={doc}
+          docState={docState}
+          pageTitle={PAGE_TITLE[page]}
+          sidebarOpen={sidebarOpen}
+          panelOpen={panelOpen}
+          onOpenSidebar={openSidebar}
+          onTogglePanel={togglePanel}
+          onUndo={undo}
+          onRedo={redo}
+          onSave={save}
+          onSaveAs={saveAs}
+        />
 
         <div className="workspace">
-          {doc && backend ? (
-            <>
-              <DocumentView
-                doc={doc}
-                backend={backend}
-                activeCommentId={activeCommentId}
-                target={target}
-                onCommentClick={onDocCommentClick}
-                onTopBlockChange={setTopBlock}
-              />
-              <aside className={`panel${panelOpen ? "" : " closed"}`}>
-                <CommentsPanel comments={doc.summary.comments} activeId={activeCommentId} onSelect={selectComment} />
-              </aside>
-            </>
-          ) : (
-            <div className="welcome">
-              <div className="welcome-card">
-                <img src="/logo.svg" alt="" />
-                <h1>让每一轮评审都更快通过</h1>
-                <p>打开一份带批注的 Word 报告，按批注逐条定位、查看和处理。</p>
-                {loading ? (
-                  <div className="loading" style={{ justifyContent: "center" }}>
-                    <div className="spinner" /> 正在解析文档…
-                  </div>
-                ) : (
-                  <button className="btn primary" onClick={() => void openPicker()} disabled={!backend}>
-                    <FolderOpen size={16} /> 打开 .docx 文档
-                  </button>
-                )}
-                <div className="hint">也可以把文件拖到窗口中 · 文档只在本机处理</div>
+          <div className={`doc-page${onPage ? "" : " hidden"}`} inert={!onPage}>
+            {doc && backend ? (
+              <>
+                <DocumentView
+                  doc={doc}
+                  version={version}
+                  backend={backend}
+                  activeCommentId={activeCommentId}
+                  target={target}
+                  onCommentClick={onDocCommentClick}
+                  onTopBlockChange={setTopBlock}
+                />
+                <aside className={`panel${panelOpen ? "" : " closed"}`}>
+                  <CommentsPanel
+                    key={doc.docId}
+                    backend={backend}
+                    docId={doc.docId}
+                    comments={doc.summary.comments}
+                    authors={authors}
+                    activeId={activeCommentId}
+                    needsModel={settings !== null && !settings.roles.chat.model}
+                    onSelect={selectComment}
+                    edit={edit}
+                    onAuthors={setAuthors}
+                    onOpenSettings={openRoleSettings}
+                    notify={notify}
+                  />
+                </aside>
+              </>
+            ) : (
+              <div className="welcome">
+                <div className="welcome-card">
+                  <img src="/logo.svg" alt="" />
+                  <h1>让每一轮评审都更快通过</h1>
+                  <p>打开一份带批注的 Word 报告，按批注逐条定位、查看和处理。</p>
+                  {loading ? (
+                    <div className="loading" style={{ justifyContent: "center" }}>
+                      <div className="spinner" /> 正在解析文档…
+                    </div>
+                  ) : (
+                    <button className="btn primary" onClick={() => void openPicker()} disabled={!backend}>
+                      <FolderOpen size={16} /> 打开 .docx 文档
+                    </button>
+                  )}
+                  <div className="hint">也可以把文件拖到窗口中 · 文档只在本机处理</div>
+                </div>
               </div>
+            )}
+          </div>
+          {backend && visited.has("kb") && (
+            <div className={`page-layer${page === "kb" ? "" : " hidden"}`} inert={page !== "kb"}>
+              <KnowledgeBasePage backend={backend} active={page === "kb"} settings={settings} dropped={kbDrop} notify={notify} />
+            </div>
+          )}
+          {backend && visited.has("reviewers") && (
+            <div className={`page-layer${page === "reviewers" ? "" : " hidden"}`} inert={page !== "reviewers"}>
+              <ReviewersPage
+                backend={backend}
+                active={page === "reviewers"}
+                docId={doc?.docId ?? null}
+                section={section}
+                onJump={jumpToParagraph}
+                notify={notify}
+              />
             </div>
           )}
         </div>
 
-        {dragging && <div className="drop-overlay">松开以打开文档</div>}
+        {dragging && <div className="drop-overlay">{page === "kb" ? "松开以导入知识库" : "松开以打开文档"}</div>}
         {toast && <div className={`toast${toast.error ? " error" : ""}`}>{toast.text}</div>}
       </main>
+
+      {backend && settingsTab && (
+        <SettingsDialog backend={backend} initialTab={settingsTab} onClose={closeSettings} onSaved={setSettings} />
+      )}
     </div>
   );
 }

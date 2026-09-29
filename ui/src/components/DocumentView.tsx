@@ -10,12 +10,16 @@ const CHUNK = 100;
 export interface ScrollTarget {
   blockIndex: number;
   commentId?: string;
+  /** Flashes this paragraph once it is in view. */
+  paragraphIndex?: number;
   /** Changes on every request so repeated clicks on the same target still scroll. */
   nonce: number;
 }
 
 interface Props {
   doc: OpenedDoc;
+  /** Changes after every edit; the view then refetches its blocks. */
+  version: number;
   backend: Backend;
   activeCommentId: string | null;
   target: ScrollTarget | null;
@@ -36,6 +40,7 @@ function estimate(block: BlockView | undefined): number {
 
 export const DocumentView = memo(function DocumentView({
   doc,
+  version,
   backend,
   activeCommentId,
   target,
@@ -44,20 +49,39 @@ export const DocumentView = memo(function DocumentView({
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const cache = useRef(new Map<number, BlockView>());
+  /** Blocks from before the last edit, drawn until their fresh copy arrives so heights and scroll position hold. */
+  const stale = useRef(new Map<number, BlockView>());
   const requested = useRef(new Set<number>());
-  const [, setVersion] = useState(0);
+  /** Responses to requests from an older document or version are dropped. */
+  const generation = useRef(0);
+  const seenVersion = useRef(version);
+  const [, setTick] = useState(0);
 
   useEffect(() => {
     cache.current = new Map();
+    stale.current = new Map();
     requested.current = new Set();
-    setVersion((v) => v + 1);
+    generation.current++;
+    setTick((v) => v + 1);
     scrollRef.current?.scrollTo({ top: 0 });
   }, [doc.docId]);
+
+  useEffect(() => {
+    if (seenVersion.current === version) return;
+    seenVersion.current = version;
+    for (const [i, b] of cache.current) stale.current.set(i, b);
+    cache.current = new Map();
+    requested.current = new Set();
+    generation.current++;
+    setTick((v) => v + 1);
+  }, [version]);
+
+  const blockAt = (i: number) => cache.current.get(i) ?? stale.current.get(i);
 
   const virtualizer = useVirtualizer({
     count: doc.summary.blockCount,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (i) => estimate(cache.current.get(i)),
+    estimateSize: (i) => estimate(blockAt(i)),
     overscan: 6,
     paddingStart: 40,
     paddingEnd: 200,
@@ -71,19 +95,24 @@ export const DocumentView = memo(function DocumentView({
     const load = (chunk: number) => {
       if (chunk < 0 || chunk * CHUNK >= doc.summary.blockCount || requested.current.has(chunk)) return;
       requested.current.add(chunk);
+      const gen = generation.current;
       backend
         .blocks(doc.docId, chunk * CHUNK, (chunk + 1) * CHUNK)
         .then((blocks) => {
-          for (const b of blocks) cache.current.set(b.index, b);
-          setVersion((v) => v + 1);
+          if (gen !== generation.current) return;
+          for (const b of blocks) {
+            cache.current.set(b.index, b);
+            stale.current.delete(b.index);
+          }
+          setTick((v) => v + 1);
         })
-        .catch(() => requested.current.delete(chunk));
+        .catch(() => gen === generation.current && requested.current.delete(chunk));
     };
     const from = Math.floor(first / CHUNK);
     const to = Math.floor(last / CHUNK);
     for (let c = from; c <= to; c++) load(c);
     load(to + 1); // prefetch the next chunk while reading
-  }, [first, last, doc.docId, doc.summary.blockCount, backend]);
+  }, [first, last, doc.docId, doc.summary.blockCount, backend, version]);
 
   const scrollOffset = virtualizer.scrollOffset ?? 0;
   const topBlock = items.find((i) => i.end > scrollOffset + 8)?.index ?? first;
@@ -91,19 +120,23 @@ export const DocumentView = memo(function DocumentView({
 
   useEffect(() => {
     if (!target) return;
-    virtualizer.scrollToIndex(target.blockIndex, { align: target.commentId ? "center" : "start" });
+    const centered = target.commentId !== undefined || target.paragraphIndex !== undefined;
+    virtualizer.scrollToIndex(target.blockIndex, { align: centered ? "center" : "start" });
     let frames = 0;
     let handle = 0;
     const settle = () => {
       const root = scrollRef.current;
-      const selector = target.commentId
-        ? `[data-c~="${CSS.escape(target.commentId)}"]`
-        : `[data-index="${target.blockIndex}"]`;
+      const selector =
+        target.commentId !== undefined
+          ? `[data-c~="${CSS.escape(target.commentId)}"]`
+          : target.paragraphIndex !== undefined
+            ? `[data-paragraph="${target.paragraphIndex}"]`
+            : `[data-index="${target.blockIndex}"]`;
       const el = root?.querySelector<HTMLElement>(selector);
       // Wait a few frames so measured heights settle before the final scroll.
-      if (el && cache.current.has(target.blockIndex) && frames > 3) {
-        el.scrollIntoView({ block: target.commentId ? "center" : "start" });
-        if (target.commentId) {
+      if (el && blockAt(target.blockIndex) && frames > 3) {
+        el.scrollIntoView({ block: centered ? "center" : "start" });
+        if (centered) {
           for (const n of root!.querySelectorAll<HTMLElement>(selector)) {
             n.classList.remove("flash");
             void n.offsetWidth;
@@ -125,7 +158,7 @@ export const DocumentView = memo(function DocumentView({
     <div ref={scrollRef} className="doc-scroll scroll">
       <div className="doc-canvas" style={{ height: virtualizer.getTotalSize() }}>
         {items.map((item) => {
-          const block = cache.current.get(item.index);
+          const block = blockAt(item.index);
           return (
             <div
               key={item.key}
