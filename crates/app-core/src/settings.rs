@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use docx_engine::EditMode;
 
+pub use crate::web::WebSettings;
+
 /// Which provider and model serve one role.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -82,6 +84,7 @@ impl Default for FixSettings {
 pub struct Settings {
     pub roles: Roles,
     pub fix: FixSettings,
+    pub web: WebSettings,
 }
 
 impl Settings {
@@ -100,6 +103,20 @@ impl Settings {
         fix.kb_passages = fix.kb_passages.clamp(1, 20);
         fix.concurrency = fix.concurrency.clamp(1, 8);
         fix.profile_every = fix.profile_every.clamp(1, 200);
+        let mut seen = std::collections::HashSet::new();
+        self.web.whitelist = self
+            .web
+            .whitelist
+            .iter()
+            .map(|w| {
+                w.trim()
+                    .trim_start_matches("https://")
+                    .trim_start_matches("http://")
+                    .trim_end_matches('/')
+                    .to_ascii_lowercase()
+            })
+            .filter(|w| !w.is_empty() && seen.insert(w.clone()))
+            .collect();
         self
     }
 }

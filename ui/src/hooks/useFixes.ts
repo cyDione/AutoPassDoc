@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Backend } from "../api";
-import type { FixProposal, FixSelection, FixStage } from "../types";
-import { errorMessage } from "../util";
+import type { FixMode, FixProposal, FixSelection, FixStage } from "../types";
+import { errorMessage, hasPlaceholder } from "../util";
 import type { Notify, RunEdit } from "./useDocumentSession";
 
 /** The AI fix state of one comment. */
@@ -24,12 +24,21 @@ function withEntry(map: FixEntries, id: string, entry: FixEntry | null): FixEntr
   return next;
 }
 
+/**
+ * How to run a fix. Fields left out reuse what the comment's last run used:
+ * `selection: null` goes back to the highlighted paragraphs, and the
+ * direction always comes from the comment's direction box.
+ */
+export interface FixOptions {
+  selection?: FixSelection | null;
+  mode?: FixMode;
+}
+
 export interface FixActions {
-  /**
-   * Runs a fix. `selection` rewrites those paragraphs instead of the ones under
-   * the highlight; left out, a regenerate reuses the comment's last selection.
-   */
-  fix: (commentId: string, selection?: FixSelection | null) => void;
+  /** Runs a fix, or a rewrite with `mode: "rewrite"`. */
+  fix: (commentId: string, options?: FixOptions) => void;
+  /** Edits the comment's revision direction, sent with its next run. */
+  setDirection: (commentId: string, text: string) => void;
   apply: (commentId: string, proposal: FixProposal, edited: string[] | null, force: boolean) => Promise<boolean>;
   reject: (commentId: string, proposal: FixProposal) => void;
 }
@@ -42,6 +51,13 @@ export function useFixes(backend: Backend, docId: number, edit: RunEdit, notify:
   const entriesRef = useRef(entries);
   const timers = useRef(new Set<number>());
   const selections = useRef(new Map<string, FixSelection>());
+  const modes = useRef(new Map<string, FixMode>());
+  /** Revision direction per comment; state so the boxes re-render, a ref so runs read the latest text. */
+  const [directions, setDirections] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const directionsRef = useRef(directions);
+  useEffect(() => {
+    directionsRef.current = directions;
+  }, [directions]);
 
   useEffect(() => {
     entriesRef.current = entries;
@@ -76,13 +92,30 @@ export function useFixes(backend: Backend, docId: number, edit: RunEdit, notify:
     [backend, docId, ready],
   );
 
+  const setDirection = useCallback((commentId: string, text: string) => {
+    setDirections((prev) => {
+      const next = new Map(prev);
+      if (text) next.set(commentId, text);
+      else next.delete(commentId);
+      directionsRef.current = next;
+      return next;
+    });
+  }, []);
+
   const fix = useCallback(
-    async (commentId: string, selection?: FixSelection | null) => {
+    async (commentId: string, options: FixOptions = {}) => {
+      const { selection, mode } = options;
       if (selection) selections.current.set(commentId, selection);
       else if (selection === null) selections.current.delete(commentId);
+      if (mode) modes.current.set(commentId, mode);
       setEntries((prev) => withEntry(prev, commentId, { kind: "running", stage: null }));
       try {
-        ready(commentId, await backend.fixComment(docId, commentId, selections.current.get(commentId) ?? null));
+        const request = {
+          selection: selections.current.get(commentId) ?? null,
+          mode: modes.current.get(commentId) ?? "fix",
+          direction: directionsRef.current.get(commentId)?.trim() || null,
+        };
+        ready(commentId, await backend.fixComment(docId, commentId, request));
       } catch (e) {
         setEntries((prev) => withEntry(prev, commentId, { kind: "failed", error: errorMessage(e) }));
       }
@@ -145,7 +178,7 @@ export function useFixes(backend: Backend, docId: number, edit: RunEdit, notify:
   /** Applies every proposal whose judge passed, one after another. */
   const applyPassed = useCallback(async () => {
     const targets = [...entriesRef.current].flatMap(([id, e]) =>
-      e.kind === "ready" && !e.busy && e.proposal.judge?.passed ? [{ id, proposal: e.proposal }] : [],
+      e.kind === "ready" && !e.busy && e.proposal.judge?.passed && !hasPlaceholder(e.proposal) ? [{ id, proposal: e.proposal }] : [],
     );
     if (targets.length === 0) return;
     let applied = 0;
@@ -161,5 +194,5 @@ export function useFixes(backend: Backend, docId: number, edit: RunEdit, notify:
 
   const closeBatch = useCallback(() => setBatch(null), []);
 
-  return { entries, batch, applyingAll, fix, apply, reject, runBatch, applyPassed, closeBatch };
+  return { entries, batch, applyingAll, directions, fix, setDirection, apply, reject, runBatch, applyPassed, closeBatch };
 }

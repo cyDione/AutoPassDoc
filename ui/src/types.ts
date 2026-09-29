@@ -151,6 +151,20 @@ export interface FixSelection {
   text: string;
 }
 
+/** `fix` changes only what the comment asks; `rewrite` may rewrite the paragraphs when the original is wrong. */
+export type FixMode = "fix" | "rewrite";
+
+/** What the user asked for beyond the comment itself. */
+export interface FixRequest {
+  selection?: FixSelection | null;
+  mode?: FixMode;
+  /** Steers the model; followed ahead of the minimal-change rule. */
+  direction?: string | null;
+}
+
+/** Marks what the model could not find; a proposal holding one cannot be applied until the user fills it in. */
+export const PLACEHOLDER = "【待补充";
+
 export interface FixProposal {
   id: string;
   docId: number;
@@ -167,6 +181,7 @@ export interface FixProposal {
   elapsedMs: number;
   warnings: string[];
   context: { passages: number; examples: number; profile: boolean };
+  mode: FixMode;
 }
 
 export type FixStage = "context" | "retrieve" | "generate" | "judge" | "done" | "error";
@@ -256,6 +271,20 @@ export interface Settings {
     concurrency: number;
     profileEvery: number;
   };
+  web: WebSettings;
+}
+
+/** How a provider's own web search is switched on. */
+export type ModelWebSearch = "open_router" | "anthropic" | "dash_scope" | "zhipu" | "open_ai";
+
+export interface WebSettings {
+  /** auto: the model's search, falling back to the whitelist; model / local: only that one; off: no web access. */
+  mode: "auto" | "model" | "local" | "off";
+  /** `null` detects it from the chat model's provider. */
+  modelSearch: ModelWebSearch | null;
+  engine: "bing" | "baidu";
+  /** Domains the local search may use, matched as suffixes. */
+  whitelist: string[];
 }
 
 export type ProviderKind = "openai" | "openrouter" | "anthropic" | "ollama";
@@ -375,4 +404,24 @@ export interface PreReviewItem {
   quote: string;
   comment: string;
   category: string | null;
+}
+
+export interface WebResult {
+  title: string;
+  url: string;
+  site: string;
+  snippet: string;
+  kind: "page" | "file";
+  /** Lowercase extension of a file result. */
+  fileType: string | null;
+  /** The knowledge base can import it (PDF, Word, TXT, Markdown). */
+  importable: boolean;
+}
+
+export interface WebSearchOutcome {
+  results: WebResult[];
+  /** Searched by the chat model itself, or by this machine through the whitelist. */
+  via: "model" | "local";
+  /** What was tried and why it fell back. */
+  notes: string[];
 }

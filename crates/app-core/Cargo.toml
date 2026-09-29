@@ -8,6 +8,10 @@ description = "AutoPassDoc application logic: settings, reviewers, AI fixes, kno
 docx-engine = { path = "../docx-engine" }
 models = { version = "0.1.0", path = "../models" }
 kb = { path = "../kb" }
+encoding_rs = "0.8.42"
+percent-encoding = "2"
+regex = "1.13.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "system-proxy"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

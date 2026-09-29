@@ -567,3 +567,94 @@ async fn network_errors_name_the_endpoint() {
         "{msg}"
     );
 }
+
+#[tokio::test]
+async fn web_search_parameters_and_sources() {
+    use models::WebSearch;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{ "message": { "role": "assistant", "content": "[]",
+                "annotations": [{ "type": "url_citation",
+                    "url_citation": { "url": "https://www.gov.cn/a.html", "title": "通知", "content": "摘要" } }] } }],
+            "search_info": { "search_results": [{ "url": "https://www.shanghai.gov.cn/b.html", "title": "上海" }] },
+            "web_search": [{ "link": "https://flk.npc.gov.cn/c", "title": "法规" }, { "link": "javascript:x" }]
+        })))
+        .mount(&server)
+        .await;
+    let c = client();
+    let p = provider(ProviderKind::OpenAiCompatible, &server);
+    let mut sent = Vec::new();
+    for kind in [
+        WebSearch::OpenRouter,
+        WebSearch::DashScope,
+        WebSearch::Zhipu,
+        WebSearch::OpenAi,
+    ] {
+        let mut req = request("m", None);
+        req.web_search = Some(kind);
+        let r = c.chat(&p, &req).await.unwrap();
+        let urls: Vec<&str> = r.citations.iter().map(|c| c.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://www.gov.cn/a.html",
+                "https://www.shanghai.gov.cn/b.html",
+                "https://flk.npc.gov.cn/c"
+            ]
+        );
+        assert_eq!(r.citations[0].snippet, "摘要");
+    }
+    for b in bodies(&server).await {
+        sent.push(b);
+    }
+    assert_eq!(sent[0]["plugins"][0]["id"], "web");
+    assert_eq!(sent[1]["enable_search"], true);
+    assert_eq!(sent[2]["tools"][0]["type"], "web_search");
+    assert!(sent[3]["web_search_options"].is_object());
+
+    let anthropic = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_partial_json(json!({ "tools": [{ "name": "web_search" }] })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [
+                { "type": "server_tool_use", "id": "1", "name": "web_search", "input": {} },
+                { "type": "web_search_tool_result", "content": [{ "type": "web_search_result", "url": "https://www.mee.gov.cn/x", "title": "标准" }] },
+                { "type": "text", "text": "[]", "citations": [{ "url": "https://www.mee.gov.cn/x", "title": "标准", "cited_text": "..." }] }
+            ],
+            "stop_reason": "end_turn"
+        })))
+        .mount(&anthropic)
+        .await;
+    let mut req = request("claude", None);
+    req.web_search = Some(WebSearch::Anthropic);
+    let r = c
+        .chat(&provider(ProviderKind::Anthropic, &anthropic), &req)
+        .await
+        .unwrap();
+    assert_eq!(r.content, "[]");
+    assert_eq!(r.citations.len(), 1);
+
+    let detect = |kind, url: &str| WebSearch::detect(&Provider::new(kind, url));
+    assert_eq!(
+        detect(
+            ProviderKind::OpenAiCompatible,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        ),
+        Some(WebSearch::DashScope)
+    );
+    assert_eq!(
+        detect(
+            ProviderKind::OpenAiCompatible,
+            "https://open.bigmodel.cn/api/paas/v4"
+        ),
+        Some(WebSearch::Zhipu)
+    );
+    assert_eq!(
+        detect(ProviderKind::OpenAiCompatible, "https://api.deepseek.com"),
+        None
+    );
+    assert_eq!(detect(ProviderKind::Ollama, ""), None);
+}

@@ -1,7 +1,7 @@
 import { memo, useState } from "react";
-import { AlertTriangle, ChevronDown, ChevronRight, FileText, RefreshCw } from "lucide-react";
-import type { Citation, FixProposal, Judgement } from "../types";
-import { percent } from "../util";
+import { AlertTriangle, ChevronDown, ChevronRight, FileText, Globe, PenLine, RefreshCw, Sparkles } from "lucide-react";
+import { PLACEHOLDER, type Citation, type FixMode, type FixProposal, type Judgement } from "../types";
+import { hasPlaceholder, percent } from "../util";
 import { DiffView } from "./DiffView";
 import { Floating } from "./Floating";
 
@@ -10,9 +10,40 @@ interface Props {
   busy: boolean;
   error: string | undefined;
   onApply: (edited: string[] | null, force: boolean) => void;
-  onRegenerate: () => void;
+  /** Regenerates, switching to `mode` when given. */
+  onRegenerate: (mode?: FixMode) => void;
   onReject: () => void;
   onOpenCitation: (path: string) => void;
+  /** Searches the web for what a placeholder asks for. */
+  onSearch: (need: string) => void;
+}
+
+const PLACEHOLDER_RE = /【待补充[:：]?([^】]*)】/g;
+
+/** What each "【待补充：…】" in the proposal asks for, without repeats. */
+function placeholderNeeds(proposal: FixProposal): string[] {
+  const needs = new Set<string>();
+  for (const p of proposal.paragraphs) for (const m of p.new.matchAll(PLACEHOLDER_RE)) needs.add(m[1].trim() || "待补充内容");
+  return [...needs];
+}
+
+/** Lists what the model could not fill in, each with a web search. */
+function Placeholders({ needs, onSearch }: { needs: string[]; onSearch: (need: string) => void }) {
+  return (
+    <div className="fix-placeholders">
+      <div className="head">
+        <AlertTriangle size={13} /> 修改里有待补充的内容，补充成实际内容后才能应用
+      </div>
+      {needs.map((need) => (
+        <div key={need} className="need">
+          <span className="text">{need}</span>
+          <button type="button" className="btn sm" onClick={() => onSearch(need)}>
+            <Globe size={12} /> 查找资料
+          </button>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 /** Why a judged proposal may not be applied with one click. */
@@ -106,18 +137,23 @@ function CitationChips({ citations, onOpen }: { citations: Citation[]; onOpen: (
 }
 
 /** An AI fix inside a comment card: diff, judgement, sources and actions. */
-export const FixResult = memo(function FixResult({ proposal, busy, error, onApply, onRegenerate, onReject, onOpenCitation }: Props) {
+export const FixResult = memo(function FixResult({ proposal, busy, error, onApply, onRegenerate, onReject, onOpenCitation, onSearch }: Props) {
   const [details, setDetails] = useState(false);
   const [editing, setEditing] = useState<string[] | null>(null);
   const [confirming, setConfirming] = useState(false);
   const { judge } = proposal;
   const blocked = judge !== null && !judge.passed;
+  const needs = hasPlaceholder(proposal) ? placeholderNeeds(proposal) : [];
+  const suggested = proposal.paragraphs.map((p) => p.new);
+  // Placeholders must be replaced by hand: the edit has to change the text and leave none behind.
+  const unfilled = editing !== null && needs.length > 0 && (editing.some((t) => t.includes(PLACEHOLDER)) || editing.every((t, i) => t === suggested[i]));
 
   return (
     <div className="fix-result" onClick={(e) => e.stopPropagation()}>
       <div className="fix-head">
         <ConfidencePill proposal={proposal} />
         {judge?.category && <span className="tag">{judge.category}</span>}
+        {proposal.mode === "rewrite" && <span className="tag">重写</span>}
         {proposal.reviewer && <span className="tag subtle">{proposal.reviewer}</span>}
         <span className="spacer" />
         {judge && (
@@ -152,6 +188,7 @@ export const FixResult = memo(function FixResult({ proposal, busy, error, onAppl
         </div>
       ))}
       {error && <div className="fix-note error">{error}</div>}
+      {needs.length > 0 && <Placeholders needs={needs} onSearch={onSearch} />}
 
       {confirming && judge && (
         <div className="fix-confirm">
@@ -178,7 +215,13 @@ export const FixResult = memo(function FixResult({ proposal, busy, error, onAppl
       <div className="fix-actions">
         {editing ? (
           <>
-            <button type="button" className="btn sm primary" disabled={busy} onClick={() => onApply(editing, true)}>
+            <button
+              type="button"
+              className="btn sm primary"
+              disabled={busy || unfilled}
+              title={unfilled ? "先把“【待补充…】”改成实际内容" : undefined}
+              onClick={() => onApply(editing, true)}
+            >
               {busy && <span className="spinner sm" />}应用修改
             </button>
             <button type="button" className="btn sm" disabled={busy} onClick={() => setEditing(null)}>
@@ -187,21 +230,38 @@ export const FixResult = memo(function FixResult({ proposal, busy, error, onAppl
           </>
         ) : (
           <>
-            <button
-              type="button"
-              className={`btn sm${blocked ? "" : " primary"}`}
-              disabled={busy || confirming}
-              onClick={() => (blocked ? setConfirming(true) : onApply(null, false))}
-            >
-              {busy && <span className="spinner sm" />}
-              {blocked ? "仍然应用" : "应用"}
-            </button>
-            <button type="button" className="btn sm" disabled={busy} onClick={() => setEditing(proposal.paragraphs.map((p) => p.new))}>
-              编辑
-            </button>
-            <button type="button" className="btn sm" disabled={busy} onClick={onRegenerate} title="重新生成">
+            {needs.length > 0 ? (
+              <button type="button" className="btn sm primary" disabled={busy} onClick={() => setEditing(suggested)}>
+                补充后应用
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className={`btn sm${blocked ? "" : " primary"}`}
+                  disabled={busy || confirming}
+                  onClick={() => (blocked ? setConfirming(true) : onApply(null, false))}
+                >
+                  {busy && <span className="spinner sm" />}
+                  {blocked ? "仍然应用" : "应用"}
+                </button>
+                <button type="button" className="btn sm" disabled={busy} onClick={() => setEditing(suggested)}>
+                  编辑
+                </button>
+              </>
+            )}
+            <button type="button" className="btn sm" disabled={busy} onClick={() => onRegenerate()} title="按当前的修改方向重新生成">
               <RefreshCw size={12} /> 重新生成
             </button>
+            {proposal.mode === "rewrite" ? (
+              <button type="button" className="btn sm" disabled={busy} title="只改批注指出的问题" onClick={() => onRegenerate("fix")}>
+                <Sparkles size={12} /> 改用修复
+              </button>
+            ) : (
+              <button type="button" className="btn sm" disabled={busy} title="原文本身不对时，整段重写" onClick={() => onRegenerate("rewrite")}>
+                <PenLine size={12} /> 改用重写
+              </button>
+            )}
             <button type="button" className="btn sm ghost" disabled={busy} onClick={onReject}>
               忽略
             </button>

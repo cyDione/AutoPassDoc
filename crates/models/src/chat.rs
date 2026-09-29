@@ -85,6 +85,63 @@ pub struct ChatRequest {
     pub profile: ModelProfile,
     /// Ask for a JSON object (`response_format`) when the profile allows it.
     pub json_output: bool,
+    /// Switch on the provider's own web search.
+    pub web_search: Option<WebSearch>,
+}
+
+/// How a provider's own web search is switched on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebSearch {
+    /// OpenRouter's `web` plugin; sources come back as `url_citation` annotations.
+    OpenRouter,
+    /// Anthropic's server-side `web_search` tool.
+    Anthropic,
+    /// Alibaba Cloud Model Studio (DashScope) `enable_search`.
+    DashScope,
+    /// Zhipu's `web_search` tool.
+    Zhipu,
+    /// OpenAI search models' `web_search_options`.
+    OpenAi,
+}
+
+impl WebSearch {
+    /// The search a provider offers, judged from its protocol and host.
+    /// Plain OpenAI-compatible services get `None`: most cannot search, and
+    /// the few that can say so through a setting.
+    pub fn detect(p: &Provider) -> Option<Self> {
+        match p.kind {
+            ProviderKind::OpenRouter => Some(Self::OpenRouter),
+            ProviderKind::Anthropic => Some(Self::Anthropic),
+            ProviderKind::Ollama => None,
+            ProviderKind::OpenAiCompatible => {
+                let base = p.base_url.to_ascii_lowercase();
+                if base.contains("dashscope.aliyuncs.com")
+                    || base.contains("dashscope-intl.aliyuncs.com")
+                {
+                    Some(Self::DashScope)
+                } else if base.contains("bigmodel.cn") {
+                    Some(Self::Zhipu)
+                } else if base.contains("openrouter.ai") {
+                    Some(Self::OpenRouter)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+/// A web page the model's search used.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UrlCitation {
+    /// Page address.
+    pub url: String,
+    /// Page title, possibly empty.
+    pub title: String,
+    /// Page excerpt, when the provider returns one.
+    #[serde(default)]
+    pub snippet: String,
 }
 
 impl ChatRequest {
@@ -99,6 +156,7 @@ impl ChatRequest {
             temperature: None,
             thinking: None,
             json_output: false,
+            web_search: None,
         }
     }
 }
@@ -123,6 +181,9 @@ pub struct ChatResponse {
     pub finish_reason: Option<String>,
     /// Token usage.
     pub usage: Option<Usage>,
+    /// Sources of a web search, in the order the provider listed them.
+    #[serde(default)]
+    pub citations: Vec<UrlCitation>,
 }
 
 /// Which parts of the request to send.
@@ -233,6 +294,12 @@ fn chat_body(kind: ProviderKind, req: &ChatRequest, opts: BodyOptions) -> Value 
         } else if let Some(t) = req.temperature.filter(|_| opts.optional) {
             obj.insert("temperature".into(), f32_json(t.clamp(0.0, 1.0)));
         }
+        if req.web_search.is_some() {
+            obj.insert(
+                "tools".into(),
+                json!([{ "type": "web_search_20250305", "name": "web_search", "max_uses": 3 }]),
+            );
+        }
         return Value::Object(obj);
     }
 
@@ -261,7 +328,114 @@ fn chat_body(kind: ProviderKind, req: &ChatRequest, opts: BodyOptions) -> Value 
     if let Some(level) = level {
         insert_thinking(&mut obj, kind, req, level);
     }
+    match req.web_search {
+        Some(WebSearch::OpenRouter) => {
+            obj.insert("plugins".into(), json!([{ "id": "web", "max_results": 5 }]));
+        }
+        Some(WebSearch::DashScope) => {
+            obj.insert("enable_search".into(), true.into());
+            obj.insert(
+                "search_options".into(),
+                json!({ "enable_source": true, "forced_search": true }),
+            );
+        }
+        Some(WebSearch::Zhipu) => {
+            obj.insert(
+                "tools".into(),
+                json!([{ "type": "web_search", "web_search": { "enable": true, "search_result": true } }]),
+            );
+        }
+        Some(WebSearch::OpenAi) => {
+            obj.insert("web_search_options".into(), json!({}));
+        }
+        Some(WebSearch::Anthropic) | None => {}
+    }
     Value::Object(obj)
+}
+
+/// Web sources from any of the places providers put them.
+fn citations(kind: ProviderKind, v: &Value) -> Vec<UrlCitation> {
+    let mut out: Vec<UrlCitation> = Vec::new();
+    let mut add = |url: Option<&str>, title: Option<&str>, snippet: Option<&str>| {
+        let Some(url) = url
+            .map(str::trim)
+            .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+        else {
+            return;
+        };
+        if out.iter().any(|c| c.url == url) {
+            return;
+        }
+        out.push(UrlCitation {
+            url: url.to_string(),
+            title: title.unwrap_or_default().trim().to_string(),
+            snippet: snippet.unwrap_or_default().trim().to_string(),
+        });
+    };
+    let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(|x| x.to_owned());
+    if kind == ProviderKind::Anthropic {
+        for block in v
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(results) = block.get("content").and_then(Value::as_array)
+                && block.get("type").and_then(Value::as_str) == Some("web_search_tool_result")
+            {
+                for r in results {
+                    add(s(r, "url").as_deref(), s(r, "title").as_deref(), None);
+                }
+            }
+            for c in block
+                .get("citations")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                add(
+                    s(c, "url").as_deref(),
+                    s(c, "title").as_deref(),
+                    s(c, "cited_text").as_deref(),
+                );
+            }
+        }
+        return out;
+    }
+    let message = v.pointer("/choices/0/message").unwrap_or(&Value::Null);
+    for a in message
+        .get("annotations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let c = a.get("url_citation").unwrap_or(a);
+        add(
+            s(c, "url").as_deref(),
+            s(c, "title").as_deref(),
+            s(c, "content").as_deref(),
+        );
+    }
+    // DashScope: `search_info.search_results`; Zhipu: `web_search`.
+    for list in [
+        v.pointer("/search_info/search_results"),
+        message.pointer("/search_info/search_results"),
+        v.get("web_search"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_array)
+    {
+        for r in list {
+            let url = s(r, "url").or_else(|| s(r, "link"));
+            add(
+                url.as_deref(),
+                s(r, "title").as_deref(),
+                s(r, "content").as_deref(),
+            );
+        }
+    }
+    out
 }
 
 /// Adds the thinking parameter for an OpenAI-style request.
@@ -385,6 +559,7 @@ fn parse_response(kind: ProviderKind, endpoint: &str, v: &Value) -> Result<ChatR
         reasoning: (!reasoning.is_empty()).then(|| reasoning.join("\n\n")),
         finish_reason,
         usage,
+        citations: citations(kind, v),
     })
 }
 

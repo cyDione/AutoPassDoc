@@ -1,3 +1,5 @@
+import { PLACEHOLDER, type FixProposal } from "./types";
+
 const AVATAR_COLORS = ["#c96442", "#5b7fb8", "#4f8a6b", "#a2689c", "#b8873a", "#5f8f9c", "#8c6d52", "#6b72a8"];
 
 export function avatarColor(name: string): string {
@@ -58,4 +60,9 @@ export function errorMessage(e: unknown): string {
 export function isTyping(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   return target.isContentEditable || target.matches("input, textarea, select");
+}
+
+/** True when the proposal still holds a "【待补充…】" the user has to fill in before it can be applied. */
+export function hasPlaceholder(proposal: FixProposal): boolean {
+  return proposal.paragraphs.some((p) => p.new.includes(PLACEHOLDER));
 }

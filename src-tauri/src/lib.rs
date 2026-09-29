@@ -121,6 +121,8 @@ pub fn run() {
             knowledge::kb_search,
             knowledge::kb_embed,
             knowledge::kb_clear_embeddings,
+            knowledge::web_search,
+            knowledge::web_download_to_kb,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AutoPassDoc");

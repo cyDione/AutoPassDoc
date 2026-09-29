@@ -32,7 +32,7 @@ mod probe;
 mod profile;
 mod provider;
 
-pub use chat::{ChatRequest, ChatResponse, Message, Role, Usage};
+pub use chat::{ChatRequest, ChatResponse, Message, Role, UrlCitation, Usage, WebSearch};
 pub use client::{ANTHROPIC_VERSION, Client, ClientConfig};
 pub use decide::{Answer, AnswerValue, Question, QuestionKind};
 pub use error::{Error, Result};

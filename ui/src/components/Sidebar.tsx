@@ -1,6 +1,5 @@
 import { memo, useEffect, useRef } from "react";
-import { FileText, FolderOpen, Library, Monitor, Moon, PanelLeftClose, Settings, Sun, Type, Users } from "lucide-react";
-import type { Theme } from "../hooks/useTheme";
+import { FileText, FolderOpen, Library, PanelLeftClose, Settings, Users } from "lucide-react";
 import type { OpenedDoc, OutlineItem } from "../types";
 import { formatChars } from "../util";
 
@@ -17,9 +16,7 @@ interface Props {
   /** Index into the outline of the section at the top of the document view. */
   currentOutline: number;
   page: Page;
-  theme: Theme;
   onNavigate: (page: Page) => void;
-  onThemeChange: (theme: Theme) => void;
   onOpen: () => void;
   onOpenSettings: () => void;
   onOutlineClick: (item: OutlineItem) => void;
@@ -30,9 +27,7 @@ export const Sidebar = memo(function Sidebar({
   doc,
   currentOutline: current,
   page,
-  theme,
   onNavigate,
-  onThemeChange,
   onOpen,
   onOpenSettings,
   onOutlineClick,
@@ -98,22 +93,8 @@ export const Sidebar = memo(function Sidebar({
       {!doc && <div style={{ flex: 1 }} />}
 
       <div className="sidebar-footer">
-        <span className="label">外观</span>
-        {(
-          [
-            ["light", Sun, "浅色"],
-            ["dark", Moon, "深色"],
-            ["word", Type, "Word 配色"],
-            ["system", Monitor, "跟随系统"],
-          ] as const
-        ).map(([key, Icon, label]) => (
-          <button key={key} className={`icon-btn${theme === key ? " on" : ""}`} title={label} onClick={() => onThemeChange(key)}>
-            <Icon size={15} />
-          </button>
-        ))}
-        <span className="footer-sep" />
-        <button className="icon-btn" title="设置" onClick={onOpenSettings}>
-          <Settings size={15} />
+        <button className="side-action" title="设置（外观、模型、联网搜索、数据备份、关于）" onClick={onOpenSettings}>
+          <Settings size={16} /> 设置
         </button>
       </div>
     </>

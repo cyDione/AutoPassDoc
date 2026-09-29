@@ -14,6 +14,7 @@ pub mod reviewers;
 pub mod secrets;
 pub mod settings;
 pub mod store;
+pub mod web;
 
 pub use crate::core::{Core, RoleName, Target};
 pub use error::{Error, Result};

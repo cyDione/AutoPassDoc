@@ -6,7 +6,7 @@ import type {
   CommentView,
   FixProgress,
   FixProposal,
-  FixSelection,
+  FixRequest,
   FixStage,
   KbDocument,
   KbHit,
@@ -22,6 +22,7 @@ import type {
   SpanView,
   Summary,
 } from "../types";
+import { PLACEHOLDER } from "../types";
 import { diffChars } from "./diff";
 import { DemoDocument, paragraphText, rewriteSpans, type DemoSource } from "./document";
 import { draftFix, seededRandom } from "./fixes";
@@ -189,7 +190,10 @@ export function createDemoBackend(): Backend {
   const emitFix = (p: FixProgress) => fixListeners.forEach((h) => h(p));
   const emitKb = (p: KbProgress) => kbListeners.forEach((h) => h(p));
 
-  async function runFix(docId: number, commentId: string, selection?: FixSelection | null): Promise<FixProposal> {
+  async function runFix(docId: number, commentId: string, request?: FixRequest): Promise<FixProposal> {
+    const selection = request?.selection ?? null;
+    const mode = request?.mode ?? "fix";
+    const direction = request?.direction?.trim() ?? "";
     const stage = (s: FixStage) => emitFix({ docId, commentId, stage: s });
     const started = performance.now();
     try {
@@ -220,7 +224,7 @@ export function createDemoBackend(): Backend {
       const attempt = attempts.get(`${docId}:${commentId}`) ?? 0;
       attempts.set(`${docId}:${commentId}`, attempt + 1);
       const reviewer = reviewerFor(docId, comment.author);
-      const draft = draftFix(comment, original, attempt, reviewer?.threshold ?? settings.fix.threshold, settings, kbDocs);
+      const draft = draftFix(comment, original, attempt, reviewer?.threshold ?? settings.fix.threshold, settings, kbDocs, mode, direction);
       stage("judge");
       await delay(500);
       const proposal: FixProposal = {
@@ -245,6 +249,7 @@ export function createDemoBackend(): Backend {
         elapsedMs: Math.round(performance.now() - started),
         warnings: draft.warnings,
         context: { passages: draft.citations.length * 3, examples: reviewer ? 3 : 0, profile: reviewer !== null && profiles.has(reviewer.id) },
+        mode,
       };
       proposals.set(proposal.id, proposal);
       emitFix({ docId, commentId, stage: "done", proposal });
@@ -420,6 +425,30 @@ export function createDemoBackend(): Backend {
       doc.markSaved(doc.savedPath);
       return doc.state;
     },
+    async addCommentReply(docId, commentId, text) {
+      const doc = getDoc(docId);
+      const body = text.trim();
+      if (!body) throw new Error("回复内容不能为空");
+      const target = doc.comments.find((c) => c.id === commentId);
+      if (!target) throw new Error("找不到批注");
+      const root = target.parentId ? (doc.comments.find((c) => c.id === target.parentId) ?? target) : target;
+      const comments: CommentView[] = [
+        ...doc.comments,
+        {
+          id: `reply-${Date.now().toString(36)}`,
+          author: settings.fix.author,
+          initials: [...settings.fix.author][0] ?? "A",
+          date: new Date().toISOString(),
+          text: body,
+          parentId: root.id,
+          done: false,
+          blockIndex: root.blockIndex,
+          paragraphIndex: root.paragraphIndex,
+          quote: "",
+        },
+      ];
+      return doc.commit("回复批注", { comments });
+    },
     async setCommentDone(docId, commentId, done) {
       const doc = getDoc(docId);
       const comments = doc.comments.map((c) => (c.id === commentId ? { ...c, done } : c));
@@ -443,6 +472,9 @@ export function createDemoBackend(): Backend {
     async applyFix(docId, proposalId, edited, force) {
       const proposal = proposals.get(proposalId);
       if (!proposal || proposal.docId !== docId) throw new Error("修改建议已失效，请重新生成");
+      const texts = edited ?? proposal.paragraphs.map((p) => p.new);
+      if (texts.some((t) => t.includes(PLACEHOLDER)))
+        throw new Error(edited ? "修改里还有“【待补充…】”，请改成实际内容后再应用" : "修改里有待补充的内容，请先查找资料、手动补充后再应用");
       if (!edited && !force && proposal.judge && !proposal.judge.passed) throw new Error("置信度未达标，需要确认后才能应用");
       await delay(120);
       const doc = getDoc(docId);
@@ -726,6 +758,63 @@ export function createDemoBackend(): Backend {
     },
     async openPath(path) {
       console.info(`[演示] 用系统默认程序打开：${path}`);
+    },
+    async openUrl(url) {
+      window.open(url, "_blank", "noopener");
+    },
+    async webSearch(query) {
+      const q = query.trim();
+      if (!q) throw new Error("请输入要查找的内容");
+      await delay(900);
+      const model = !!settings.roles.chat.model;
+      const site = "https://tjj.sh.gov.cn";
+      return {
+        via: model ? "model" : "local",
+        notes: model ? [] : ["尚未配置大语言模型，已改用本机白名单搜索"],
+        results: [
+          {
+            title: `2024年上海市国民经济和社会发展统计公报（${q.slice(0, 12)}）`,
+            url: `${site}/tjgb/20250319/2024gb.html`,
+            site: "tjj.sh.gov.cn",
+            snippet: "年末全市常住人口2480.26万人。全年地区生产总值53926.71亿元，比上年增长5.0%。",
+            kind: "page",
+            fileType: null,
+            importable: false,
+          },
+          {
+            title: "2024年上海市国民经济和社会发展统计公报（PDF 全文）",
+            url: `${site}/tjgb/20250319/2024gb.pdf`,
+            site: "tjj.sh.gov.cn",
+            snippet: "附件，来自：2024年上海市国民经济和社会发展统计公报",
+            kind: "file",
+            fileType: "pdf",
+            importable: true,
+          },
+          {
+            title: "崇明区2024年国民经济和社会发展统计公报",
+            url: "https://www.shcm.gov.cn/tjj/2024gb.html",
+            site: "www.shcm.gov.cn",
+            snippet: "年末全区常住人口63.73万人，全年接待游客人次比上年增长。",
+            kind: "page",
+            fileType: null,
+            importable: false,
+          },
+          {
+            title: "崇明区统计年鉴2024（附表）",
+            url: "https://www.shcm.gov.cn/tjj/nianjian2024.xls",
+            site: "www.shcm.gov.cn",
+            snippet: "附件，来自：崇明区统计年鉴",
+            kind: "file",
+            fileType: "xls",
+            importable: false,
+          },
+        ],
+      };
+    },
+    async webDownloadToKb(url) {
+      const name = decodeURIComponent(url.split("/").pop() ?? "下载的资料.pdf");
+      const [report] = await importFiles([name]);
+      return report;
     },
 
     confirm: async (message) => window.confirm(message),

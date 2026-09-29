@@ -1,30 +1,40 @@
 import { useCallback, useEffect, useState } from "react";
-import { Cpu, Database, Server, Sparkles, X } from "lucide-react";
+import { Cpu, Database, Globe, Server, SlidersHorizontal, Sparkles, X } from "lucide-react";
 import type { Backend } from "../../api";
+import type { CommentLayout } from "../../hooks/useCommentLayout";
+import type { Theme } from "../../hooks/useTheme";
 import type { ModelView, ProviderView, Settings } from "../../types";
 import { errorMessage } from "../../util";
 import { DataTab } from "./DataTab";
 import { FixTab } from "./FixTab";
+import { GeneralTab } from "./GeneralTab";
 import { ProvidersTab } from "./ProvidersTab";
 import { RolesTab } from "./RolesTab";
+import { WebTab } from "./WebTab";
 
-export type SettingsTab = "providers" | "roles" | "fix" | "data";
+export type SettingsTab = "general" | "providers" | "roles" | "fix" | "web" | "data";
 
 const TABS = [
+  ["general", SlidersHorizontal, "通用"],
   ["providers", Server, "模型服务"],
   ["roles", Cpu, "模型分配"],
   ["fix", Sparkles, "AI 修复"],
+  ["web", Globe, "联网搜索"],
   ["data", Database, "数据"],
 ] as const;
 
 interface Props {
   backend: Backend;
   initialTab: SettingsTab;
+  theme: Theme;
+  onTheme: (theme: Theme) => void;
+  layout: CommentLayout;
+  onLayout: (layout: CommentLayout) => void;
   onClose: () => void;
   onSaved: (settings: Settings) => void;
 }
 
-export function SettingsDialog({ backend, initialTab, onClose, onSaved }: Props) {
+export function SettingsDialog({ backend, initialTab, theme, onTheme, layout, onLayout, onClose, onSaved }: Props) {
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [saved, setSaved] = useState<Settings | null>(null);
   const [draft, setDraft] = useState<Settings | null>(null);
@@ -118,7 +128,7 @@ export function SettingsDialog({ backend, initialTab, onClose, onSaved }: Props)
             ))}
           </nav>
           <div key={tab} className="dialog-content scroll">
-            {!ready && !error && (
+            {!ready && !error && tab !== "general" && tab !== "data" && (
               <div className="loading">
                 <span className="spinner" /> 正在加载…
               </div>
@@ -137,7 +147,9 @@ export function SettingsDialog({ backend, initialTab, onClose, onSaved }: Props)
                 beforeTest={beforeTest}
               />
             )}
+            {tab === "general" && <GeneralTab theme={theme} onTheme={onTheme} layout={layout} onLayout={onLayout} />}
             {ready && tab === "fix" && <FixTab fix={draft.fix} onChange={(fix) => setDraft({ ...draft, fix })} />}
+            {ready && tab === "web" && <WebTab web={draft.web} onChange={(web) => setDraft({ ...draft, web })} />}
             {tab === "data" && <DataTab backend={backend} />}
           </div>
         </div>

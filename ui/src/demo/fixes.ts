@@ -1,4 +1,4 @@
-import type { Citation, CommentView, JudgeItem, Judgement, KbDocument, Settings } from "../types";
+import type { Citation, CommentView, FixMode, JudgeItem, Judgement, KbDocument, Settings } from "../types";
 import { KB_PASSAGES } from "./seed";
 
 /** Deterministic pseudo-random numbers, so a comment's first attempt always looks the same. */
@@ -81,7 +81,9 @@ function rewrite(comment: string, original: string, pick: number): Rewrite {
     notes.push("补充与国内先进地区的对标分析");
   } else if (/统计年鉴|数据口径/.test(comment)) {
     category = "数据口径";
-    insert("（数据来源：2024年市统计年鉴）", "补充数据来源");
+    // The first attempt lacks the figure, as a real model would without a source.
+    if (pick % 2 === 0) insert("（数据来源：【待补充：2024年市统计年鉴中的对应数据】）", "标出需要补充的数据来源");
+    else insert("（数据来源：2024年市统计年鉴）", "补充数据来源");
   } else if (/测算方法/.test(comment)) {
     category = "数据口径";
     insert("（按工程量清单法测算，主要单价参照2024年本市信息化项目预算编制标准）", "说明测算方法和参数依据");
@@ -217,9 +219,22 @@ export function draftFix(
   threshold: number,
   settings: Settings,
   kb: KbDocument[],
+  mode: FixMode = "fix",
+  direction = "",
 ): DraftFix {
   const random = seededRandom(`${comment.id}:${attempt}`);
-  const { text, notes, category, warnings } = rewrite(comment.text, original, attempt + Math.floor(random() * PHRASES.length));
+  const drafted = rewrite(comment.text, original, attempt + Math.floor(random() * PHRASES.length));
+  const { category, warnings } = drafted;
+  let { text, notes } = drafted;
+  if (mode === "rewrite") {
+    // A rewrite restates the whole paragraph instead of patching one phrase.
+    text = text
+      .replace(/进一步/g, "持续")
+      .replace(/显著的?/g, "明显")
+      .replace(/^(.{0,40}?)，/, "$1。在此基础上，");
+    notes = ["按批注和上下文重写了整段表述", ...notes.slice(0, 1)];
+  }
+  if (direction) notes = [`按修改方向“${direction.length > 20 ? `${direction.slice(0, 20)}…` : direction}”调整`, ...notes];
   const cites = settings.fix.useKb ? citations(random, kb, 2) : [];
   let judgement: Judgement | null = null;
   let judgeError: string | null = null;

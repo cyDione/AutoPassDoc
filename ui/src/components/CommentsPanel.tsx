@@ -4,7 +4,7 @@ import type { Backend } from "../api";
 import type { Notify, RunEdit } from "../hooks/useDocumentSession";
 import { useFixes } from "../hooks/useFixes";
 import type { AuthorView, CommentView, FixSelection } from "../types";
-import { avatarColor, avatarText, errorMessage } from "../util";
+import { avatarColor, avatarText, errorMessage, hasPlaceholder } from "../util";
 import { AuthorPopover } from "./AuthorPopover";
 import { CommentCard, type CardActions } from "./CommentCard";
 import { ConfirmButton } from "./ConfirmButton";
@@ -28,6 +28,8 @@ interface Props {
   edit: RunEdit;
   onAuthors: (authors: AuthorView[]) => void;
   onOpenSettings: () => void;
+  /** Opens the web search for what a "【待补充…】" in a comment's fix asks for. */
+  onSearch: (comment: CommentView, need: string) => void;
   notify: Notify;
 }
 
@@ -43,6 +45,7 @@ export const CommentsPanel = memo(function CommentsPanel({
   edit,
   onAuthors,
   onOpenSettings,
+  onSearch,
   notify,
 }: Props) {
   const [status, setStatus] = useState<Status>("all");
@@ -102,7 +105,7 @@ export const CommentsPanel = memo(function CommentsPanel({
     const e = entries.get(t.id);
     return !t.done && (!e || e.kind === "failed");
   });
-  const passedCount = [...entries.values()].filter((e) => e.kind === "ready" && e.proposal.judge?.passed).length;
+  const passedCount = [...entries.values()].filter((e) => e.kind === "ready" && e.proposal.judge?.passed && !hasPlaceholder(e.proposal)).length;
   const batchDone = batch ? batch.filter((id) => entries.get(id)?.kind !== "running").length : 0;
   const batchRunning = batch !== null && batchDone < batch.length;
 
@@ -122,13 +125,23 @@ export const CommentsPanel = memo(function CommentsPanel({
       return next;
     });
 
-  const { fix, apply, reject } = fixes;
+  const { fix, setDirection, apply, reject } = fixes;
   const actions: CardActions = useMemo(
     () => ({
       select: onSelect,
       fix,
+      setDirection,
       apply,
       reject,
+      reply: (c, text) =>
+        edit(() => backend.addCommentReply(docId, c.id, text)).then(
+          () => true,
+          (e) => {
+            notify(`回复失败：${errorMessage(e)}`, true);
+            return false;
+          },
+        ),
+      search: onSearch,
       toggleDone: (c) =>
         void edit(() => backend.setCommentDone(docId, c.id, !c.done)).catch((e) => notify(`操作失败：${errorMessage(e)}`, true)),
       openAuthor: (name, anchor) => {
@@ -137,7 +150,7 @@ export const CommentsPanel = memo(function CommentsPanel({
       },
       openCitation: (path) => void backend.openPath(path).catch((e) => notify(`无法打开文件：${errorMessage(e)}`, true)),
     }),
-    [onSelect, fix, apply, reject, edit, backend, docId, notify, authorsByName],
+    [onSelect, fix, setDirection, apply, reject, edit, backend, docId, notify, authorsByName, onSearch],
   );
   const closePopover = useCallback(() => setPopover(null), []);
 
@@ -253,6 +266,7 @@ export const CommentsPanel = memo(function CommentsPanel({
             author={authorsByName.get(t.author)}
             nameOf={nameOf}
             fix={entries.get(t.id)}
+            direction={fixes.directions.get(t.id) ?? ""}
             actions={actions}
           />
         ))}

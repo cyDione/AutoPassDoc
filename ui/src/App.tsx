@@ -7,8 +7,10 @@ import type { Section } from "./components/reviewers/PreReviewCard";
 import { SettingsDialog, type SettingsTab } from "./components/settings/SettingsDialog";
 import { Sidebar, type Page } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
+import { WebSearchDialog, type WebSearchRequest } from "./components/WebSearchDialog";
 import { useDocumentSession } from "./hooks/useDocumentSession";
 import { usePanelWidth } from "./hooks/usePanelWidth";
+import { useCommentLayout } from "./hooks/useCommentLayout";
 import { useTheme } from "./hooks/useTheme";
 import { KnowledgeBasePage, type DroppedFiles } from "./pages/KnowledgeBasePage";
 import { ReviewersPage } from "./pages/ReviewersPage";
@@ -28,6 +30,7 @@ export default function App() {
   const notify = useCallback((text: string, error?: boolean) => setToast({ text, error }), []);
   const { doc, docState, version, authors, setAuthors, loading, load, edit, undo, redo, save, saveAs } = useDocumentSession(backend, notify);
   const [theme, setTheme] = useTheme();
+  const [commentLayout, setCommentLayout] = useCommentLayout();
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
   const [page, setPage] = useState<Page>("doc");
@@ -41,6 +44,7 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const [kbDrop, setKbDrop] = useState<DroppedFiles | null>(null);
   const [docSelection, setDocSelection] = useState<FixSelection | null>(null);
+  const [webSearch, setWebSearch] = useState<WebSearchRequest | null>(null);
   const panelWidth = usePanelWidth();
   const onSelectionChange = useCallback(
     (next: FixSelection | null) =>
@@ -52,6 +56,15 @@ export default function App() {
       ),
     [],
   );
+
+  // A selection made for one comment must not carry over to the next (C-1).
+  const lastActive = useRef(activeCommentId);
+  useEffect(() => {
+    if (lastActive.current === activeCommentId) return;
+    lastActive.current = activeCommentId;
+    setDocSelection(null);
+    window.getSelection()?.removeAllRanges();
+  }, [activeCommentId]);
 
   useEffect(() => {
     backendPromise.then(setBackend);
@@ -171,11 +184,22 @@ export default function App() {
     [navigate],
   );
 
+  const docName = doc?.fileName;
+  const onSearch = useCallback(
+    (_comment: CommentView, need: string) => {
+      // The document's name usually carries the place and project, which narrows the search.
+      const context = (docName ?? "").replace(/\.docx$/i, "").replace(/[_-]?AutoPassDoc$/i, "").slice(0, 24);
+      setWebSearch({ need, context, nonce: Date.now() });
+    },
+    [docName],
+  );
+  const closeWebSearch = useCallback(() => setWebSearch(null), []);
+
   const onOpen = useCallback(() => void openPicker(), [openPicker]);
   const collapseSidebar = useCallback(() => setSidebarOpen(false), []);
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
   const togglePanel = useCallback(() => setPanelOpen((v) => !v), []);
-  const openSettings = useCallback(() => setSettingsTab("providers"), []);
+  const openSettings = useCallback(() => setSettingsTab("general"), []);
   const openRoleSettings = useCallback(() => setSettingsTab("roles"), []);
   const closeSettings = useCallback(() => setSettingsTab(null), []);
 
@@ -238,9 +262,7 @@ export default function App() {
           doc={doc}
           currentOutline={currentOutline}
           page={page}
-          theme={theme}
           onNavigate={navigate}
-          onThemeChange={setTheme}
           onOpen={onOpen}
           onOpenSettings={openSettings}
           onOutlineClick={onOutlineClick}
@@ -302,6 +324,7 @@ export default function App() {
                     edit={edit}
                     onAuthors={setAuthors}
                     onOpenSettings={openRoleSettings}
+                    onSearch={onSearch}
                     notify={notify}
                   />
                 </aside>
@@ -349,8 +372,18 @@ export default function App() {
         {toast && <div className={`toast${toast.error ? " error" : ""}`}>{toast.text}</div>}
       </main>
 
+      {backend && webSearch && <WebSearchDialog key={webSearch.nonce} backend={backend} request={webSearch} onClose={closeWebSearch} notify={notify} />}
       {backend && settingsTab && (
-        <SettingsDialog backend={backend} initialTab={settingsTab} onClose={closeSettings} onSaved={setSettings} />
+        <SettingsDialog
+          backend={backend}
+          initialTab={settingsTab}
+          theme={theme}
+          onTheme={setTheme}
+          layout={commentLayout}
+          onLayout={setCommentLayout}
+          onClose={closeSettings}
+          onSaved={setSettings}
+        />
       )}
     </div>
   );

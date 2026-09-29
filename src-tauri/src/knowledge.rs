@@ -114,6 +114,34 @@ pub async fn kb_import(
     Ok(reports)
 }
 
+/// Looks something up on the web (the chat model's search, else the whitelist).
+#[tauri::command]
+pub async fn web_search(query: String, core: CoreState<'_>) -> Res<app_core::web::SearchOutcome> {
+    core.web_search(&query).await.map_err(err)
+}
+
+/// Downloads a file from the search results into the knowledge base.
+#[tauri::command]
+pub async fn web_download_to_kb(
+    url: String,
+    app: AppHandle,
+    core: CoreState<'_>,
+) -> Res<ImportResult> {
+    let core = core.inner().clone();
+    let report = core.web_download_to_kb(&url).await.map_err(err)?;
+    if report.doc_id.is_some()
+        && !report.unchanged
+        && core
+            .target(app_core::RoleName::Embedding)
+            .ok()
+            .flatten()
+            .is_some()
+    {
+        embed_later(app, core);
+    }
+    Ok(report)
+}
+
 #[tauri::command]
 pub async fn kb_remove(doc_id: i64, core: CoreState<'_>) -> Res<()> {
     let core = core.inner().clone();

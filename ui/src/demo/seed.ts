@@ -70,8 +70,44 @@ export function seedSettings(): Settings {
       concurrency: 3,
       profileEvery: 10,
     },
+    web: { mode: "auto", modelSearch: null, engine: "bing", whitelist: [...DEFAULT_WHITELIST] },
   };
 }
+
+/** Mirrors `app_core::web::DEFAULT_WHITELIST`. */
+export const DEFAULT_WHITELIST = [
+  "gov.cn",
+  "www.gov.cn",
+  "flk.npc.gov.cn",
+  "www.npc.gov.cn",
+  "www.moj.gov.cn",
+  "std.samr.gov.cn",
+  "openstd.samr.gov.cn",
+  "hbba.sacinfo.org.cn",
+  "dbba.sacinfo.org.cn",
+  "www.mohurd.gov.cn",
+  "www.ccsn.org.cn",
+  "www.ndrc.gov.cn",
+  "www.mof.gov.cn",
+  "www.mee.gov.cn",
+  "www.mnr.gov.cn",
+  "www.mwr.gov.cn",
+  "www.mot.gov.cn",
+  "www.miit.gov.cn",
+  "www.mem.gov.cn",
+  "www.nea.gov.cn",
+  "www.stats.gov.cn",
+  "www.ccgp.gov.cn",
+  "www.shanghai.gov.cn",
+  "fgw.sh.gov.cn",
+  "zjw.sh.gov.cn",
+  "ghzyj.sh.gov.cn",
+  "sthj.sh.gov.cn",
+  "tjj.sh.gov.cn",
+  "www.spcsc.sh.cn",
+  "www.shcm.gov.cn",
+  "www.pudong.gov.cn",
+];
 
 export function seedReviewers(): Reviewer[] {
   return [

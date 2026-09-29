@@ -6,7 +6,7 @@ import type {
   EditOutcome,
   FixProgress,
   FixProposal,
-  FixSelection,
+  FixRequest,
   KbDocument,
   KbHit,
   KbImportReport,
@@ -24,6 +24,7 @@ import type {
   ReviewerProfile,
   Settings,
   Summary,
+  WebSearchOutcome,
 } from "./types";
 
 export type Unsubscribe = () => void;
@@ -51,11 +52,15 @@ export interface Backend {
   /** Saves to the path of the last save; rejects if the document was never saved. */
   save(docId: number): Promise<DocState>;
   setCommentDone(docId: number, commentId: string, done: boolean): Promise<EditOutcome>;
+  /** Adds a Word reply to the comment's thread, signed with the revision author from the settings. */
+  addCommentReply(docId: number, commentId: string, text: string): Promise<EditOutcome>;
 
   // AI fixes
-  /** Runs one fix; progress also arrives through onFixProgress. */
-  /** `selection` replaces the paragraphs under the comment's highlight. */
-  fixComment(docId: number, commentId: string, selection?: FixSelection | null): Promise<FixProposal>;
+  /**
+   * Runs one fix; progress also arrives through onFixProgress. `request.selection`
+   * replaces the paragraphs under the comment's highlight.
+   */
+  fixComment(docId: number, commentId: string, request?: FixRequest): Promise<FixProposal>;
   /** Starts fixes for several comments; each result arrives through onFixProgress. */
   fixBatch(docId: number, commentIds: string[]): Promise<void>;
   onFixProgress(handler: (p: FixProgress) => void): Unsubscribe;
@@ -121,6 +126,14 @@ export interface Backend {
   onKbProgress(handler: (p: KbProgress) => void): Unsubscribe;
   /** Opens a file with the system's default app. */
   openPath(path: string): Promise<void>;
+  /** Opens a web page in the default browser. */
+  openUrl(url: string): Promise<void>;
+
+  // Web
+  /** Searches the web: the chat model's own search first, else whitelisted sites from this machine. */
+  webSearch(query: string): Promise<WebSearchOutcome>;
+  /** Downloads a file from the last search results and imports it into the knowledge base. */
+  webDownloadToKb(url: string): Promise<KbImportReport>;
 
   // Window
   /** Asks the user to confirm a destructive step; resolves true to go ahead. */
@@ -201,8 +214,9 @@ async function tauriBackend(): Promise<Backend> {
     redo: (docId) => invoke("redo", { docId }),
     save: (docId) => invoke("save_document", { docId }),
     setCommentDone: (docId, commentId, done) => invoke("set_comment_done", { docId, commentId, done }),
+    addCommentReply: (docId, commentId, text) => invoke("add_comment_reply", { docId, commentId, text }),
 
-    fixComment: (docId, commentId, selection) => invoke("fix_comment", { docId, commentId, selection: selection ?? null }),
+    fixComment: (docId, commentId, request) => invoke("fix_comment", { docId, commentId, request: request ?? null }),
     fixBatch: (docId, commentIds) => invoke("fix_batch", { docId, commentIds }),
     onFixProgress: (handler) => subscribe<FixProgress>("fix-progress", handler),
     applyFix: (docId, proposalId, edited, force) => invoke("apply_fix", { docId, proposalId, edited, force }),
@@ -263,6 +277,9 @@ async function tauriBackend(): Promise<Backend> {
     kbClearEmbeddings: () => invoke("kb_clear_embeddings"),
     onKbProgress: (handler) => subscribe<KbProgress>("kb-progress", handler),
     openPath: (path) => opener.openPath(path),
+    openUrl: (url) => opener.openUrl(url),
+    webSearch: (query) => invoke("web_search", { query }),
+    webDownloadToKb: (url) => invoke("web_download_to_kb", { url }),
 
     confirm: (message, title, okLabel) =>
       dialog.confirm(message, { title, kind: "warning", okLabel, cancelLabel: "取消" }),

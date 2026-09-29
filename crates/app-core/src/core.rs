@@ -55,6 +55,7 @@ pub struct Core {
     pub(crate) kb: Mutex<Option<kb::KnowledgeBase>>,
     /// Set while chunks are being embedded.
     pub(crate) embedding: AtomicBool,
+    pub(crate) web: crate::web::WebState,
 }
 
 impl Core {
@@ -75,6 +76,7 @@ impl Core {
             proposals: Mutex::new(HashMap::new()),
             kb: Mutex::new(None),
             embedding: AtomicBool::new(false),
+            web: crate::web::WebState::new()?,
         })
     }
 
