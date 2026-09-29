@@ -143,9 +143,11 @@ async fn imports_embeds_searches_and_cites() {
     std::fs::write(&plan, PLAN).unwrap();
     let missing = dir.path().join("不存在.docx");
     let progress = std::sync::Mutex::new(Vec::new());
-    let reports = core.kb_import(&[notice.clone(), plan, missing], |done, total, _| {
-        progress.lock().unwrap().push((done, total))
-    });
+    let reports = core
+        .kb_import(&[notice.clone(), plan, missing], |done, total, _| {
+            progress.lock().unwrap().push((done, total))
+        })
+        .await;
     assert!(
         reports[0].error.is_none() && reports[0].chunks > 0,
         "{reports:?}"

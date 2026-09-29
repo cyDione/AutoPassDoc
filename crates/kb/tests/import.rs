@@ -210,7 +210,11 @@ fn tables_keep_column_headers_on_every_row() {
     let table = format!(
         "<w:tbl>{}{}{}{}</w:tbl>",
         row(&[tc("类别", ""), tc("项目", ""), tc("金额（万元）", "")]),
-        row(&[tc("建设投资", r#"<w:vMerge w:val="restart"/>"#), tc("硬件设备购置", ""), tc("1260", "")]),
+        row(&[
+            tc("建设投资", r#"<w:vMerge w:val="restart"/>"#),
+            tc("硬件设备购置", ""),
+            tc("1260", "")
+        ]),
         row(&[tc("", "<w:vMerge/>"), tc("软件开发", ""), tc("1720", "")]),
         row(&[tc("合计", r#"<w:gridSpan w:val="2"/>"#), tc("3850", "")]),
     );

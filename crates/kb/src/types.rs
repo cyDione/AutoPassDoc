@@ -28,8 +28,11 @@ pub struct KbDocument {
     pub stored_path: PathBuf,
     /// Where the file was imported from.
     pub original_path: PathBuf,
-    /// `docx`, `pdf`, `txt` or `md`.
+    /// `docx`, `pdf`, `txt`, `md`, or `image` (PNG/JPEG, online parsers only).
     pub format: String,
+    /// What produced the text: `builtin`, or the online parser's name
+    /// (`mineru`, `paddleocr`).
+    pub parser: String,
     pub meta: DocMeta,
     pub chunk_count: usize,
     /// Characters in the document text, excluding whitespace.
@@ -39,6 +42,39 @@ pub struct KbDocument {
     pub sha256: String,
     /// Warnings from the last import, e.g. a PDF that needs OCR.
     pub warnings: Vec<String>,
+}
+
+/// A document as the viewer shows it: its lines with detected headings and
+/// where each chunk sits.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentView {
+    pub document: KbDocument,
+    /// The full text split at `\n`; line `i` starts after the `i` newlines
+    /// before it, so chunk offsets can be mapped to lines.
+    pub lines: Vec<ViewLine>,
+    /// Child chunks in text order.
+    pub chunks: Vec<ChunkSpan>,
+}
+
+/// One line of [`DocumentView::lines`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewLine {
+    pub text: String,
+    /// Rank of the heading the line starts with, smaller is higher:
+    /// 0 附件, 1 编/部分, 2 章, 3 节, 4 条, 5 一、, 6 （一）, 7 1., 8 （1）, 9 ①.
+    pub heading_level: Option<u8>,
+}
+
+/// Where a child chunk sits in the full text, in chars.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChunkSpan {
+    pub chunk_id: i64,
+    pub char_start: usize,
+    pub char_end: usize,
+    pub heading_path: Vec<String>,
 }
 
 /// Document metadata, extracted on import and correctable by the user.
