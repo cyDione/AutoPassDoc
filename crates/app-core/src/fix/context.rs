@@ -33,6 +33,21 @@ pub struct FixInput {
     pub heading_path: Vec<String>,
     pub before: Vec<String>,
     pub after: Vec<String>,
+    pub mode: FixMode,
+    /// What the user wants changed, steering the model ahead of everything
+    /// but the no-fabrication rule.
+    pub direction: Option<String>,
+}
+
+/// How far a rewrite may go.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FixMode {
+    /// Change only what the comment points out, as little as possible.
+    #[default]
+    Fix,
+    /// The original text is wrong: rewrite the paragraphs as needed.
+    Rewrite,
 }
 
 /// Paragraphs the user selected in the document to rewrite instead of the
@@ -45,6 +60,28 @@ pub struct Selection {
     /// The selected text, for the model to know what exactly is meant.
     #[serde(default)]
     pub text: String,
+}
+
+/// What the user asked for beyond the comment itself.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FixRequest {
+    pub selection: Option<Selection>,
+    pub mode: FixMode,
+    pub direction: Option<String>,
+}
+
+/// Gathers the comment's context and applies the request to it.
+pub fn gather_request(doc: &Document, comment_id: &str, request: &FixRequest) -> Result<FixInput> {
+    let mut input = gather_with(doc, comment_id, request.selection.as_ref())?;
+    input.mode = request.mode;
+    input.direction = request
+        .direction
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string);
+    Ok(input)
 }
 
 pub fn gather(doc: &Document, comment_id: &str) -> Result<FixInput> {
@@ -152,6 +189,8 @@ pub fn gather_with(
         heading_path,
         before,
         after,
+        mode: FixMode::Fix,
+        direction: None,
     })
 }
 

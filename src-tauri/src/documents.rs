@@ -276,6 +276,28 @@ pub async fn set_comment_done(
     .await
 }
 
+/// Replies to a comment thread as the revision author from the settings.
+#[tauri::command]
+pub async fn add_comment_reply(
+    doc_id: u64,
+    comment_id: String,
+    text: String,
+    state: Docs<'_>,
+    core: CoreState<'_>,
+) -> Res<EditOutcome> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("回复内容不能为空".into());
+    }
+    let author = core.settings().map_err(err)?.fix.author;
+    edit(state.get(doc_id)?, move |doc| {
+        doc.add_reply(&comment_id, &author, None, &text)
+            .map(|_| ())
+            .map_err(err)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn document_authors(
     doc_id: u64,

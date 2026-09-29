@@ -21,7 +21,7 @@ use crate::profiles;
 use crate::reviewers;
 use crate::settings::DecisionBackend;
 use crate::store::{Case, CaseAction};
-use context::FixInput;
+use context::{FixInput, FixMode};
 use judge::Judgement;
 use prompt::{Passage, PromptInput};
 
@@ -67,7 +67,12 @@ pub struct Proposal {
     pub elapsed_ms: u64,
     pub warnings: Vec<String>,
     pub context: ContextUsed,
+    pub mode: FixMode,
 }
+
+/// The mark the model leaves where it lacks facts; a rewrite holding one
+/// cannot be applied until the user fills it in.
+pub const PLACEHOLDER: &str = "【待补充";
 
 /// A proposal waiting for the user's decision.
 pub(crate) struct Stored {
@@ -198,7 +203,10 @@ impl Core {
                 included.passages
             ));
         }
-        let mut messages = vec![Message::system(prompt::SYSTEM), Message::user(user)];
+        let mut messages = vec![
+            Message::system(prompt::system(input.mode)),
+            Message::user(user),
+        ];
         let mut rewrite = None;
         let mut last_problem = String::new();
         for attempt in 0..2 {
@@ -287,7 +295,7 @@ impl Core {
                 };
                 match answers
                     .map_err(|e| format!("决策模型调用失败：{e}"))
-                    .and_then(|a| judge::score(&a, threshold, backend, &decision.model))
+                    .and_then(|a| judge::score(&a, input.mode, threshold, backend, &decision.model))
                 {
                     Ok(j) => (Some(j), None),
                     Err(e) => (None, Some(e)),
@@ -323,6 +331,7 @@ impl Core {
                 examples: included.examples,
                 profile: included.profile,
             },
+            mode: input.mode,
             judge,
         };
 
@@ -333,7 +342,12 @@ impl Core {
             doc_name,
             comment_id: input.comment_id.clone(),
             author: input.author.clone(),
-            comment: input.comment.clone(),
+            // The direction is feedback on how the reviewer's comment was
+            // meant; profiles learn from it along with the comment.
+            comment: match input.direction.as_deref().map(str::trim) {
+                Some(d) if !d.is_empty() => format!("{}\n【修改方向】{d}", input.comment),
+                _ => input.comment.clone(),
+            },
             original: join(proposal.paragraphs.iter().map(|p| p.old.as_str())),
             suggestion: join(proposal.paragraphs.iter().map(|p| p.new.as_str())),
             final_text: None,
@@ -379,11 +393,19 @@ impl Core {
         if !force && proposal.judge.as_ref().is_some_and(|j| !j.passed) {
             return Err(Error::Invalid("置信度未达标，需要确认后才能应用".into()));
         }
+        let was_edited = edited.is_some();
         let texts: Vec<String> = match edited {
             Some(t) if t.len() == proposal.paragraphs.len() => t,
             Some(_) => return Err(Error::Invalid("编辑后的段落数与原文不一致".into())),
             None => proposal.paragraphs.iter().map(|p| p.new.clone()).collect(),
         };
+        if texts.iter().any(|t| t.contains(PLACEHOLDER)) {
+            return Err(Error::Invalid(if was_edited {
+                "修改里还有“【待补充…】”，请改成实际内容后再应用".into()
+            } else {
+                "修改里有待补充的内容，请先查找资料、手动补充后再应用".into()
+            }));
+        }
         for p in &proposal.paragraphs {
             if p.index >= doc.paragraphs.len() || doc.editable_text(p.index) != p.old {
                 return Err(Error::Invalid(

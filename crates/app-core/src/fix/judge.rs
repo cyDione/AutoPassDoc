@@ -10,7 +10,7 @@
 use models::{Answer, AnswerValue, Question};
 use serde::Serialize;
 
-use super::context::FixInput;
+use super::context::{FixInput, FixMode};
 use super::prompt::Passage;
 
 pub const CATEGORIES: &[(&str, &str)] = &[
@@ -157,8 +157,11 @@ pub struct Judgement {
     pub model: String,
 }
 
+/// In [`FixMode::Rewrite`] the meaning may change on purpose, so "保持原意"
+/// only weighs in and does not have to pass on its own.
 pub fn score(
     answers: &[Answer],
+    mode: FixMode,
     threshold: f32,
     backend: &'static str,
     model: &str,
@@ -174,7 +177,8 @@ pub fn score(
             None => return Err(format!("决策模型没有回答「{}」", item.label)),
         }
         .clamp(0.0, 1.0);
-        let passed = if item.hard {
+        let hard = item.hard && !(mode == FixMode::Rewrite && item.key == "meaning");
+        let passed = if hard {
             value >= threshold
         } else {
             value >= STYLE_PASS
@@ -185,7 +189,7 @@ pub fn score(
             label: item.label,
             value,
             weight: item.weight,
-            hard: item.hard,
+            hard,
             passed,
         });
     }
@@ -242,17 +246,27 @@ mod tests {
 
     #[test]
     fn weighs_items_and_enforces_hard_ones() {
-        let j = score(&answers(0.9, 0.9), 0.8, "jev", "jev-latest").unwrap();
+        let j = score(&answers(0.9, 0.9), FixMode::Fix, 0.8, "jev", "jev-latest").unwrap();
         assert!((j.confidence - (0.4 * 0.9 + 0.25 * 0.95 + 0.25 * 0.9 + 0.1 * 0.75)).abs() < 1e-5);
         assert!(j.passed);
         assert_eq!(j.category.as_deref(), Some("数据口径"));
 
-        let j = score(&answers(0.99, 0.7), 0.8, "jev", "jev-latest").unwrap();
+        let j = score(&answers(0.99, 0.7), FixMode::Fix, 0.8, "jev", "jev-latest").unwrap();
         assert!(j.confidence >= 0.8, "overall confidence is high");
         assert!(!j.passed, "but an invented fact blocks one-click apply");
         assert!(!j.items.iter().find(|i| i.key == "grounded").unwrap().passed);
 
-        assert!(score(&answers(0.9, 0.9)[..2], 0.8, "jev", "m").is_err());
+        assert!(score(&answers(0.9, 0.9)[..2], FixMode::Fix, 0.8, "jev", "m").is_err());
+    }
+
+    #[test]
+    fn rewrites_may_change_the_meaning() {
+        let mut a = answers(0.95, 0.95);
+        a[1] = yes("meaning", 0.3);
+        assert!(!score(&a, FixMode::Fix, 0.7, "jev", "m").unwrap().passed);
+        let j = score(&a, FixMode::Rewrite, 0.7, "jev", "m").unwrap();
+        assert!(j.passed);
+        assert!(!j.items.iter().find(|i| i.key == "meaning").unwrap().hard);
     }
 
     #[test]

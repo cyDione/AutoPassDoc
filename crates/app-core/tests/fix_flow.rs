@@ -409,3 +409,62 @@ async fn fixes_a_range_the_user_selected() {
     core.apply_fix(&mut doc, &p.id, None, true).unwrap();
     assert!(doc.editable_text(end).ends_with("（已核实）"));
 }
+
+#[tokio::test]
+async fn rewrites_follow_the_direction_and_placeholders_need_editing() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let core = core(dir.path(), &server);
+    let mut doc = doc();
+    let comment_id = pick(&doc);
+    let request = context::FixRequest {
+        mode: context::FixMode::Rewrite,
+        direction: Some("  按 2024 年口径重写 ".into()),
+        ..Default::default()
+    };
+    let input = context::gather_request(&doc, &comment_id, &request).unwrap();
+    assert_eq!(input.direction.as_deref(), Some("按 2024 年口径重写"));
+    let revised: Vec<String> = input
+        .paragraphs
+        .iter()
+        .map(|_| "全年接待游客【待补充：2024 年接待人次】。".to_string())
+        .collect();
+    let answer = json!({"paragraphs": revised, "explanation": "重写", "citations": []});
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(wiremock::matchers::body_string_contains(
+            "按 2024 年口径重写",
+        ))
+        .and(wiremock::matchers::body_string_contains("需要重写的段落"))
+        .respond_with(chat_reply(&answer.to_string()))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(jev_reply(0.95))
+        .mount(&server)
+        .await;
+
+    let job = FixJob {
+        doc_key: "doc".into(),
+        doc_name: "报告.docx".into(),
+        input,
+    };
+    let p = core
+        .propose(job, |c| Ok(doc.check_edits(c)?), |_| {})
+        .await
+        .unwrap();
+    assert_eq!(p.mode, context::FixMode::Rewrite);
+    let err = core.apply_fix(&mut doc, &p.id, None, true).unwrap_err();
+    assert!(err.to_string().contains("待补充"), "{err}");
+    let still: Vec<String> = p.paragraphs.iter().map(|x| x.new.clone()).collect();
+    assert!(core.apply_fix(&mut doc, &p.id, Some(still), true).is_err());
+    let filled: Vec<String> = p
+        .paragraphs
+        .iter()
+        .map(|_| "全年接待游客 1200 万人次。".to_string())
+        .collect();
+    core.apply_fix(&mut doc, &p.id, Some(filled), true).unwrap();
+    let first = p.paragraphs[0].index;
+    assert_eq!(doc.editable_text(first), "全年接待游客 1200 万人次。");
+}

@@ -5,7 +5,7 @@
 //! reviewer profile, neighbouring paragraphs, knowledge-base passages, then
 //! the reviewer's past accepted fixes.
 
-use super::context::FixInput;
+use super::context::{FixInput, FixMode};
 
 #[derive(Debug, Clone)]
 pub struct Passage {
@@ -50,9 +50,32 @@ pub const SYSTEM: &str = "你是资深的党政机关公文和项目报告修改
 5. 用到参考资料时，在 citations 中列出资料编号；没用到就给空数组。
 6. 语言符合公文规范：准确、简明、庄重，用语规范，数字、单位、标点符合国家标准。
 7. 如果提供了审稿人画像和以往示例，按该审稿人的关注点和偏好来改。
+8. 如果给出了“用户给出的修改方向”，按修改方向改，它与第 1 条冲突时以修改方向为准；但仍须遵守第 2、3、4 条。
 
 只输出一个 JSON 对象，不要输出其他文字：
 {\"paragraphs\": [\"修改后的第1段\", \"修改后的第2段\"], \"explanation\": \"一两句话说明改了什么、为什么\", \"citations\": [1]}";
+
+pub const REWRITE_SYSTEM: &str = "你是资深的党政机关公文和项目报告修改专家。用户认为下面这些段落的原文本身就有问题（事实、逻辑、表述或结构不对），需要重写，而不只是按批注做小改。你的任务是结合批注、修改方向和上下文，把这些段落重写成正确、完整、符合公文规范的文字。
+
+重写规则：
+1. 可以调整句子结构、顺序和表述，删去错误或多余的内容，不必拘泥于原文措辞。
+2. 输入几段就输出几段，顺序一致；不得合并、拆分、增加或删除段落。
+3. 形如 ⟦图⟧、⟦注1⟧、⟦公式⟧ 的占位符代表图片、脚注和公式，必须原样保留。
+4. 不得编造数据、文号、政策文件名称或事实。需要而原文和参考资料都没有依据的内容，用“【待补充：需要补充什么】”标出。
+5. 用到参考资料时，在 citations 中列出资料编号；没用到就给空数组。
+6. 语言符合公文规范：准确、简明、庄重，用语规范，数字、单位、标点符合国家标准。
+7. 如果给出了“用户给出的修改方向”，以修改方向为准；但仍须遵守第 2、3、4 条。
+
+只输出一个 JSON 对象，不要输出其他文字：
+{\"paragraphs\": [\"重写后的第1段\", \"重写后的第2段\"], \"explanation\": \"一两句话说明重写了什么、为什么\", \"citations\": [1]}";
+
+/// The system prompt for a mode.
+pub fn system(mode: FixMode) -> &'static str {
+    match mode {
+        FixMode::Fix => SYSTEM,
+        FixMode::Rewrite => REWRITE_SYSTEM,
+    }
+}
 
 /// Rough token count: one per CJK character, one per four other characters.
 pub fn estimate_tokens(s: &str) -> usize {
@@ -75,6 +98,9 @@ fn section(title: &str, body: &str) -> String {
 pub fn build(p: &PromptInput<'_>, budget: usize) -> (String, Included) {
     let input = p.input;
     let mut required = String::new();
+    if let Some(direction) = input.direction.as_deref().filter(|d| !d.trim().is_empty()) {
+        required.push_str(&section("用户给出的修改方向（优先遵循）", direction));
+    }
     if let Some(r) = p.reviewer {
         required.push_str(&section("审稿人", r));
     }
@@ -105,13 +131,19 @@ pub fn build(p: &PromptInput<'_>, budget: usize) -> (String, Included) {
         .enumerate()
         .map(|(i, (_, t))| format!("[第{}段] {t}", i + 1))
         .collect();
+    let verb = match input.mode {
+        FixMode::Fix => "修改",
+        FixMode::Rewrite => "重写",
+    };
     let target = section(
-        &format!("需要修改的段落（共 {} 段）", paragraphs.len()),
+        &format!("需要{verb}的段落（共 {} 段）", paragraphs.len()),
         &paragraphs.join("\n"),
     );
 
-    let mut used =
-        estimate_tokens(SYSTEM) + estimate_tokens(&required) + estimate_tokens(&target) + 64;
+    let mut used = estimate_tokens(system(input.mode))
+        + estimate_tokens(&required)
+        + estimate_tokens(&target)
+        + 64;
     let mut included = Included::default();
     let fits = |text: &str, used: &mut usize| {
         let t = estimate_tokens(text);
@@ -226,6 +258,8 @@ mod tests {
             heading_path: vec!["一、项目概况".into(), "（二）建设效益".into()],
             before: vec!["上一段。".into()],
             after: vec!["下一段。".into()],
+            mode: FixMode::Fix,
+            direction: None,
         }
     }
 
@@ -285,6 +319,26 @@ mod tests {
             small.contains("数据来源不明确"),
             "required parts always stay"
         );
+    }
+
+    #[test]
+    fn direction_and_rewrite_mode() {
+        let input = FixInput {
+            mode: FixMode::Rewrite,
+            direction: Some("改为按 2024 年统计口径表述".into()),
+            ..input()
+        };
+        let p = PromptInput {
+            input: &input,
+            reviewer: None,
+            profile: None,
+            passages: &[],
+            examples: &[],
+        };
+        let (msg, _) = build(&p, 100_000);
+        assert!(msg.starts_with("【用户给出的修改方向（优先遵循）】\n改为按 2024 年统计口径表述"));
+        assert!(msg.contains("需要重写的段落（共 1 段）"));
+        assert_ne!(system(FixMode::Rewrite), system(FixMode::Fix));
     }
 
     #[test]

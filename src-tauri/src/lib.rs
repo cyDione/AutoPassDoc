@@ -87,6 +87,7 @@ pub fn run() {
             documents::undo,
             documents::redo,
             documents::set_comment_done,
+            documents::add_comment_reply,
             documents::document_authors,
             documents::assign_author,
             ai::fix_comment,

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use app_core::fix::context::{self, Selection};
+use app_core::fix::context::{self, FixRequest};
 use app_core::fix::{FixJob, Proposal, Stage};
 use app_core::prereview::PreReviewItem;
 use app_core::profiles::{self, ProfileView};
@@ -51,7 +51,7 @@ async fn run_fix(
     open: &Arc<OpenDocument>,
     doc_id: u64,
     comment_id: &str,
-    selection: Option<&Selection>,
+    request: &FixRequest,
 ) -> Res<Proposal> {
     let emit = |stage, message, proposal, error| {
         let _ = app.emit(
@@ -72,7 +72,7 @@ async fn run_fix(
             FixJob {
                 doc_key: open.key.clone(),
                 doc_name: open.file_name(),
-                input: context::gather_with(&doc, comment_id, selection).map_err(err)?,
+                input: context::gather_request(&doc, comment_id, request).map_err(err)?,
             }
         };
         let check = |changes: &[(usize, String)]| -> app_core::Result<()> {
@@ -103,13 +103,14 @@ async fn run_fix(
 pub async fn fix_comment(
     doc_id: u64,
     comment_id: String,
-    selection: Option<Selection>,
+    request: Option<FixRequest>,
     app: AppHandle,
     docs: Docs<'_>,
     core: CoreState<'_>,
 ) -> Res<Proposal> {
     let open = docs.get(doc_id)?;
-    run_fix(&app, &core, &open, doc_id, &comment_id, selection.as_ref()).await
+    let request = request.unwrap_or_default();
+    run_fix(&app, &core, &open, doc_id, &comment_id, &request).await
 }
 
 /// Starts fixes for several comments, a few at a time; results arrive as
@@ -133,7 +134,8 @@ pub async fn fix_batch(
             let Ok(_permit) = permits.acquire_owned().await else {
                 return;
             };
-            let _ = run_fix(&app, &core, &open, doc_id, &comment_id, None).await;
+            let request = FixRequest::default();
+            let _ = run_fix(&app, &core, &open, doc_id, &comment_id, &request).await;
         });
     }
     Ok(())
