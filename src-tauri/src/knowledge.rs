@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use app_core::Core;
+use app_core::enhanced::{ParserInfo, ParserTest};
 use app_core::knowledge::{HitView, ImportResult, StatsView};
+use app_core::settings::ParserKind;
 use kb::{DocMeta, KbDocument};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
@@ -178,4 +180,52 @@ pub async fn kb_embed(app: AppHandle, core: CoreState<'_>) -> Res<()> {
 pub async fn kb_clear_embeddings(core: CoreState<'_>) -> Res<()> {
     let core = core.inner().clone();
     blocking(move || core.kb_clear_embeddings().map_err(err)).await
+}
+
+/// How many files an import of these paths would read (folders expanded).
+#[tauri::command]
+pub async fn kb_count_import(paths: Vec<String>, core: CoreState<'_>) -> Res<usize> {
+    let core = core.inner().clone();
+    blocking(move || {
+        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+        core.kb_count_import(&paths).map_err(err)
+    })
+    .await
+}
+
+/// A document's text, headings and chunk boundaries for the viewer.
+#[tauri::command]
+pub async fn kb_document_view(doc_id: i64, core: CoreState<'_>) -> Res<kb::DocumentView> {
+    let core = core.inner().clone();
+    blocking(move || core.kb_document_view(doc_id).map_err(err)).await
+}
+
+#[tauri::command]
+pub async fn parser_infos(core: CoreState<'_>) -> Res<Vec<ParserInfo>> {
+    let core = core.inner().clone();
+    blocking(move || core.parser_infos().map_err(err)).await
+}
+
+#[tauri::command]
+pub async fn set_parser_key(kind: ParserKind, key: String, core: CoreState<'_>) -> Res<ParserInfo> {
+    let core = core.inner().clone();
+    blocking(move || core.set_parser_key(kind, &key).map_err(err)).await
+}
+
+#[tauri::command]
+pub async fn clear_parser_key(kind: ParserKind, core: CoreState<'_>) -> Res<()> {
+    let core = core.inner().clone();
+    blocking(move || core.clear_parser_key(kind).map_err(err)).await
+}
+
+/// Checks a key; tests `key` when given (before saving), else the saved one.
+#[tauri::command]
+pub async fn test_parser(
+    kind: ParserKind,
+    key: Option<String>,
+    core: CoreState<'_>,
+) -> Res<ParserTest> {
+    core.test_parser(kind, key.as_deref().filter(|k| !k.trim().is_empty()))
+        .await
+        .map_err(err)
 }
