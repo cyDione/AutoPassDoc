@@ -1,6 +1,8 @@
 # AutoPassDoc 技术设计
 
-> 版本：v0.2（2026-09-28）　对应需求：[requirements.md](requirements.md) v1.0
+> 版本：v0.3（2026-09-29）　对应需求：[requirements.md](requirements.md) v1.2
+>
+> v0.3 新增第 13 节：第二批需求的设计（增强解析、联网查找与白名单、文档校对策略、数据备份、检查更新、批注栏改版）。
 >
 > v0.2 按实际实现更新：知识库改用 SQLite FTS5 + 向量（不再用 Tantivy/LanceDB），本地小模型改为通过本地 OpenAI 兼容服务接入（ONNX 内嵌推理未实现），新增 Word 配色主题、按审稿人预审和评判数据导出。实现状态见第 12 节。
 
@@ -362,3 +364,142 @@ v0.2：四个问题都改成"是 = 好"的问法，便于决策模型校准。�
 **实测方式**：在 Linux 虚拟显示器上运行真实桌面应用，模型接口换成本地模拟服务（返回固定格式的改写、Jev 概率、向量和重排分数），逐项点击验证：AI 修复、应用为修订、批量修复 64 条并一键应用 50 条达标修改、作者归类、知识库导入与检索、引用出处、模型测试、画像与预审、撤销重做、另存为（保存后的文件含 73 处插入、22 处删除，XML 均可解析）。
 
 **未能验证的部分**：开发环境的网络策略拦截了用户提供的测试网关，所以没有用真实的 DeepSeek、Jev、bge-m3、bge-reranker 接口跑过，Jev 返回字段和各家思考参数按公开资料实现。在设置里配置好服务商后，可用每个模型旁的"测试"逐一核对。
+
+## 13. 第二批需求设计（v1.2）
+
+对应需求文档第 7 节。原则不变：数据留在本机，模型 BYOK，每个新能力都能在没有对应服务时降级而不是报错卡住。
+
+### 13.1 新增模块一览
+
+| 位置 | 新增 | 用途 |
+|---|---|---|
+| `kb::parse` | `markdown_table_lines`（HTML/Markdown 表格 → “列名：值”行）、`parse_external_markdown` | 增强解析结果与普通模式走同一套分块 |
+| `kb` | `import_parsed`（导入外部解析好的文字）、`chunks_of(doc)` | 增强模式入库；查看资料 |
+| `app-core::enhanced` | MinerU、PaddleOCR 客户端（提交、轮询、取结果、连接测试） | K-7 |
+| `app-core::web` | 联网搜索：模型搜索 + 本机白名单抓取；下载文件入库 | A-10、Q-6 |
+| `app-core::proofread` | 校对规则、分段调用模型、结果合并与缓存 | Q-1 ~ Q-7 |
+| `app-core::backup` | 备份导出 / 导入 | S-3 |
+| `app-core::update` | 查询 GitHub 最新发布版 | S-2 |
+| `models::chat` | `ChatRequest.web_search`：各家模型自带联网的参数 | A-10、Q-6 |
+| `src-tauri` | 对应命令；`kb_import` 支持文件夹 | |
+| `ui` | 设置页“通用 / 知识库 / 联网搜索 / 关于”，批注卡片折叠与回复，经典 Word 排版，校对页，资料查看 | |
+
+### 13.2 知识库增强解析（K-7）
+
+**模式选择**：设置 › 知识库 › 解析方式：`普通`（默认）/ `MinerU` / `PaddleOCR`。选了在线服务且 Key 已保存时即为增强模式。Key 存系统钥匙串（`secrets`，键名 `parser:mineru`、`parser:paddleocr`），不进数据库、不进备份。
+
+**哪些文件走增强**：PDF（含扫描版）和图片（PNG/JPG）。Word、TXT、Markdown 本地解析已经准确，仍走普通模式。增强解析失败（网络、额度、超时）时退回普通模式，导入结果里写明“增强解析失败，已用普通模式：原因”。
+
+**MinerU**（官网 https://mineru.net ，Key 在 https://mineru.net/apiManage/token 获取）：
+
+1. `POST https://mineru.net/api/v4/file-urls/batch`，`Authorization: Bearer <token>`，JSON：`{"files":[{"name":"文件名","data_id":"apd-<sha前16位>"}],"model_version":"vlm","enable_table":true,"enable_formula":false,"language":"ch"}` → `{"code":0,"data":{"batch_id","file_urls":[预签名地址]}}`。
+2. `PUT` 文件内容到 `file_urls[0]`，**不带 Content-Type**（预签名时没签这个头，带了会 403）。上传后服务端自动开始解析。
+3. 轮询 `GET /api/v4/extract-results/batch/{batch_id}`，`data.extract_result[0].state`：`waiting-file / pending / running / converting / done / failed`；`running` 时有 `extract_progress.extracted_pages / total_pages` 用于进度；`failed` 时读 `err_msg`。间隔 2 秒起、逐步放大到 10 秒，总超时 10 分钟。
+4. `done` 时下载 `full_zip_url`，取压缩包里的 `full.md`（没有则取第一个 `.md`）。表格是 HTML `<table>`，转成“列名：值”行。
+5. 限制：单文件 200 MB、600 页；超过的先提示用户。MinerU 没有公开的额度查询接口，设置页显示“该服务不提供额度查询”和控制台链接。
+
+**PaddleOCR（百度 AI Studio）**（Key 在 https://aistudio.baidu.com/account/accessToken 获取，文档 https://ai.baidu.com/ai-doc/AISTUDIO/Kmfl2ycs0 ）：按 PaddleOCR 官方仓库 `paddleocr/_api_client` 的实现：
+
+1. `POST https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`，`Authorization: Bearer <access token>`，multipart 表单：`file`（文件）、`model`（默认 `PaddleOCR-VL-1.6`，可选 `PP-StructureV3`）、`optionalPayload`（JSON 字符串，`{"useDocOrientationClassify":true,"useDocUnwarping":false}`）→ `{"code":0,"data":{"jobId"}}`。
+2. 轮询 `GET .../api/v2/ocr/jobs/{jobId}`：`data.state` 为 `pending / running / done / failed`，`extractProgress.totalPages / extractedPages`，失败时 `errorMsg`；`done` 时 `resultUrl.jsonUrl`。
+3. 下载 `jsonUrl`（JSONL），每行 `result.layoutParsingResults[].markdown.text` 按页拼接。
+4. 服务地址可在设置里改（自建服务）。同样没有公开的额度接口。
+
+**连接测试**：设置页“测试”对 MinerU 发一次空的 `file-urls/batch`（不上传），对 PaddleOCR 查询一个不存在的 job，区分“Key 无效 / 网络不通 / 正常”。
+
+**入库**：解析得到的 Markdown 经 `parse_external_markdown` 变成行（标题行、段落行、表格每行“列名：值”），和普通模式一样分块、提取元数据。资料记录增加 `parser` 字段（`builtin / mineru / paddleocr`），列表中显示，重新导入同一文件时沿用。
+
+### 13.3 查看资料（K-8）与导入文件夹（K-9）
+
+- 命令 `kb_document_view(doc_id)` 返回元数据、全文行（带标题层级）和分块边界。界面用对话框显示：左侧章节目录，右侧虚拟滚动的全文，顶部搜索框高亮命中并可上下跳转。引用出处点击时也用这个视图打开并滚到被引用片段（K-6 的软件内打开）。
+- `kb_import` 的路径可以是文件夹：后台递归展开，只收 `.docx .pdf .txt .md`（增强模式下加图片），跳过隐藏文件、`~$` 开头的临时文件和超过 200 MB 的文件，按路径排序。界面增加“导入文件夹”按钮，文件夹拖入同样处理；先返回文件数，确认后开始导入，进度沿用 `kb-progress`。
+
+### 13.4 设置：通用、关于与更新（S-1、S-2）
+
+- 设置新增“通用”页：外观（原侧边栏的四个主题按钮）、批注排版（密集列表 / 经典 Word）。这两项是界面偏好，存 `localStorage`，点选即生效，不需要点“保存”。侧边栏底部只保留设置按钮。
+- “关于”页：应用名、版本（`tauri::app.package_info()`）、`CHANGELOG.md`（构建时打包进前端）。“检查更新”调用命令 `check_update`：后台请求 `https://api.github.com/repos/cyDione/AutoPassDoc/releases/latest`，比较语义化版本，返回最新版本号、发布时间、发布说明和下载页地址；网络失败时显示原因。
+- CI 增加发布：推送 `v*` 标签时构建安装包并创建 GitHub Release（附 Windows 与 macOS 安装包，说明取 `CHANGELOG.md` 对应版本段落），检查更新才有东西可查。
+
+### 13.5 数据备份（S-3）
+
+- 备份文件为一个 `.apdbak`（zip）：`manifest.json`（格式版本、应用版本、创建时间、资料数、审稿人数）、`app.sqlite`（`VACUUM INTO` 得到的一致快照，删除 `providers` 里的 Key 引用；Key 本就不在数据库里）、`kb/kb.sqlite`（同样 `VACUUM INTO`）、`kb/files/*`（资料原件）。
+- 导入两种方式：
+  - **替换**：先把当前数据自动导出到 `数据目录/backups/自动备份-时间.apdbak`，再关闭知识库连接、替换两个数据库和资料目录、重新打开。
+  - **合并**：审稿人按姓名匹配，没有的新建；署名映射、案例、画像按新 id 写入，已有的同名审稿人追加案例（按案例内容去重）。资料按 SHA-256 去重，新资料复制原件并导入其索引行（沿用备份里的元数据和解析方式；向量按向量模型名一起带过来，模型不同的需要重新向量化）。
+- 导出、导入都在后台线程执行，界面显示进度和结果摘要。
+
+### 13.6 批注栏（C-1 ~ C-4）
+
+- **C-1**：`activeCommentId` 变化时清空 `docSelection` 并调用 `window.getSelection().removeAllRanges()`。只在切换到另一条批注时清，在同一条批注上选字不受影响。
+- **C-2**：`CommentCard` 增加折叠形态：一行显示头像、作者、批注首句（省略号）、回复数、状态（生成中 / 待应用 / 已应用 / 已解决）。选中的卡片展开。卡片高度变化后仍把选中卡片滚动到可见。
+- **C-3**：卡片展开时底部有“回复”按钮，展开输入框；提交调用命令 `add_comment_reply(doc_id, comment_id, text)`，内部 `doc.add_reply(...)`，作者用设置里的修订作者，作为一步可撤销的编辑。
+- **C-4 经典 Word 模式**：批注不再放在右侧独立列表里，而是放在文档滚动容器内、页面右侧的页边栏里。`DocumentView` 渲染块时记录每个带批注高亮的元素（`[data-comments]`）相对滚动内容的纵向位置；页边栏按批注起点位置排布卡片，遇到重叠依次下推，选中的卡片优先放在它的原位、其余避让。页边栏跟正文一起滚动；正文是虚拟滚动的，块离开视口后它的批注也不再渲染，这正是“滚过去就没有了”。筛选、批量修复等工具条在经典模式下显示在页边栏顶部的吸顶条里。
+
+### 13.7 AI 重写与修改方向（A-11、A-12）
+
+- `fix_comment` 增加参数 `mode: "fix" | "rewrite"` 和 `direction: string`。`FixInput` 增加 `mode`、`direction`。
+- 提示词：
+  - `rewrite` 用另一套系统提示：“原文本身有问题，按批注和修改方向重写这些段落，可以调整结构和表述，但段落数不变、占位符保留、不得编造数据和文件名”。
+  - 修改方向作为必选部分放在批注之前：“【用户给出的修改方向（优先遵循）】”，并在系统提示中说明：修改方向与规则 1（改动最小）冲突时，以修改方向为准；与“不得编造”冲突时，用“【待补充：…】”标出。
+- 决策模型的问题不变；`rewrite` 时“改动是否最小”一项不作为必须达标项。
+- 案例记录增加 `mode` 和 `direction`，画像提炼时能看到用户在什么方向上纠正了 AI。
+- 界面：卡片上“AI 修复 / AI 重写”两个按钮；下方一个可折叠的“修改方向”输入框（每条批注单独记住，切换批注不丢）；结果区的“重新生成”旁增加“按方向重新生成”，并保留上次的模式。
+
+### 13.8 “待补充”与联网查找（A-10）
+
+**不能直接应用**：`apply_fix` 在后端检查：未编辑时建议文本含 `【待补充` 则拒绝（“修改里还有待补充的内容，请先补充后再应用”）；编辑后的文本仍含 `【待补充` 也拒绝。界面上“应用”按钮替换为“补充后应用”，进入编辑状态并高亮占位。
+
+**查找资料**：命令 `web_search(query, purpose)`，`query` 由占位内容加所在章节和项目名组成（如“崇明区 2024 年 常住人口 统计公报”）。返回 `{results: [{title, url, site, snippet, kind: "page"|"file", fileType}], via: "model"|"local", notes}`。
+
+1. **模型联网（优先）**：`ChatRequest.web_search = true` 时按服务商和地址自动选择参数：
+   - OpenRouter：`"plugins":[{"id":"web","max_results":5}]`，结果来自 `message.annotations[].url_citation`；
+   - Anthropic：服务端工具 `{"type":"web_search_20250305","name":"web_search","max_uses":3}`，结果取 `web_search_tool_result` 和引用；
+   - 阿里云百炼（`dashscope.aliyuncs.com`）：`"enable_search":true`，`"search_options":{"enable_source":true}`；
+   - 智谱（`open.bigmodel.cn`）：`"tools":[{"type":"web_search","web_search":{"enable":true,"search_result":true}}]`；
+   - 其他 OpenAI 兼容服务：视为不能联网，除非用户在服务商设置里勾选“该服务商支持 web_search_options”（OpenAI 搜索模型）。
+   模型被要求只输出 JSON 列表（标题、链接、摘要）；链接必须是 http(s)，并与服务商返回的引用链接取交集优先，防止编造链接。
+2. **本机白名单（降级）**：模型不能联网或联网失败时，本机用搜索引擎（默认必应中国 `cn.bing.com`，可选百度）加 `site:` 限定白名单域名查询，只保留白名单内的结果；再抓取前 5 个结果页（只抓白名单域名，限 2 MB、10 秒超时、遵守 robots.txt），提取标题、正文摘要和页内附件链接（`.pdf .doc .docx .xls .xlsx .wps .ofd`）。
+3. **下载至知识库**：命令 `web_download_to_kb(url)` 只接受搜索结果里出现过的链接，下载到临时目录后走 `kb_import`；`.doc/.wps/.ofd` 等不支持的格式只提供“用浏览器打开”。
+
+**白名单（默认，可在设置 › 联网搜索中增删）**：规则为“域名后缀匹配”。
+
+| 类别 | 域名 | 说明 |
+|---|---|---|
+| 全部政府网站 | `gov.cn` | 后缀规则，覆盖国务院各部委、各省市区县政府和部门网站 |
+| 中央 | `www.gov.cn` | 中国政府网，国务院政策文件库 |
+| 法律法规 | `flk.npc.gov.cn`、`www.npc.gov.cn` | 国家法律法规数据库、中国人大网 |
+| 规章与规范性文件 | `www.moj.gov.cn` | 司法部（国家规章库） |
+| 国家标准 | `std.samr.gov.cn`、`openstd.samr.gov.cn` | 全国标准信息公共服务平台、国家标准全文公开系统 |
+| 行业和地方标准 | `hbba.sacinfo.org.cn`、`dbba.sacinfo.org.cn` | 行业标准、地方标准信息服务平台 |
+| 工程建设标准 | `www.mohurd.gov.cn`、`www.ccsn.org.cn` | 住房和城乡建设部、工程建设标准化信息网 |
+| 发展改革与投资 | `www.ndrc.gov.cn`、`www.mof.gov.cn` | 国家发展改革委、财政部 |
+| 专业部门 | `www.mee.gov.cn`、`www.mnr.gov.cn`、`www.mwr.gov.cn`、`www.mot.gov.cn`、`www.miit.gov.cn`、`www.mem.gov.cn`、`www.nea.gov.cn`、`www.stats.gov.cn` | 生态环境、自然资源、水利、交通、工信、应急、能源、统计 |
+| 政府采购 | `www.ccgp.gov.cn` | 中国政府采购网 |
+| 上海（示例） | `www.shanghai.gov.cn`、`fgw.sh.gov.cn`、`zjw.sh.gov.cn`、`ghzyj.sh.gov.cn`、`sthj.sh.gov.cn`、`tjj.sh.gov.cn`、`www.spcsc.sh.cn`、`www.shcm.gov.cn`、`www.pudong.gov.cn` | 市政府、发改委、住建委、规划资源局、生态环境局、统计局、市人大（地方性法规）、崇明区、浦东新区 |
+| 其他省级门户 | `www.beijing.gov.cn`、`www.jiangsu.gov.cn`、`www.zj.gov.cn`、`www.gd.gov.cn` 等 | 已被 `gov.cn` 后缀覆盖，列出便于用户按省份精简 |
+
+说明：`gov.cn` 后缀已覆盖绝大多数政府网站；非 `gov.cn` 的权威站点（人大网以外的地方人大、标准化研究院平台、工程建设标准化信息网）单独列出。开发环境无法访问这些站点，白名单来自对各站点职能的整理，实际可用性需在用户电脑上验证。
+
+### 13.9 文档校对（Q-1 ~ Q-7）
+
+**校对策略**：规则能确定的交给规则（快、稳定、零成本），需要理解语义的交给模型，模型的每条结果都要能在原文中定位，定位不到的丢弃。
+
+| 阶段 | 做什么 | 由谁完成 |
+|---|---|---|
+| 1. 提取项目要素 | 从标题、封面和“项目概况”类章节提取项目名称、所在省市区县、建设单位、总投资、建设规模、工期；用户可在校对页确认或修改 | 规则（正则 + 行政区划表）+ 模型补全 |
+| 2. 规则检查 | 格式（多余空格、中文间空格、连续空段、全半角标点混用、括号引号不配对、重复标点）；序号（每级标题与段首手写序号的连续性、重号、跳号、同级样式混用）；行政区划冲突（文中出现与项目所在地同级的其他区县名，排除“对比、借鉴、参照”等语境）；引用清单（书名号内标题、标准编号如 `GB/T 50378-2019`、文号） | 规则 |
+| 3. 分段模型检查 | 按章节切成约 3000 字的段，每段附项目要素，让模型找错别字、语病、与项目要素不符之处，只输出 JSON：`[{段号, 原文片段, 建议, 类别, 理由}]`；原文片段必须在该段原样出现 | 大语言模型，并发数沿用批量修复设置 |
+| 4. 前后一致性 | 每段同时抽取“指标事实”（主体、指标、数值、单位，如“总投资 3.2 亿元”），本地按指标名归并、换算单位，数值不同的组交给模型判断是否真的矛盾（口径不同的不算） | 模型抽取 + 本地比较 + 模型确认 |
+| 5. 引用时效 | 对引用清单逐条：先查知识库是否已有且标注了“现行 / 废止”；再联网（13.8）搜索“标题 + 废止 / 修订 / 最新版”；模型判断状态：现行 / 已废止 / 已被新版替代（给出新版名称、文号或标准号、链接）/ 无法确定 | 联网搜索 + 模型 |
+| 6. 汇总 | 同一位置的重复结果合并，按类别、严重程度（错误 / 建议）、位置排序 | 本地 |
+
+**结果与操作**：新增“校对”页（侧边栏导航），显示项目要素、各类别计数和问题列表。每条问题：类别、位置（点击跳到正文并高亮）、原文片段、建议、理由；操作“应用”（把片段替换为建议，写为修订，一步可撤销）、“忽略”。格式类问题可“全部应用”。引用时效类问题提供“打开新版”“下载新版至知识库”；新版入库后可对引用它的段落“按新版复核”（把段落和新版相关条款交给模型检查表述是否需要更新）。
+
+**范围与成本**：可选全文或当前章节，可勾选检查项。结果按段落文本哈希缓存（`proofread_cache` 表：文档键、段落哈希、检查项、结果），再次校对只检查改过的段落。22 万字全文约 75 段模型请求，界面显示进度，可随时停止。
+
+**行政区划表**：内置省、地级市和上海、北京、天津、重庆各区县的名称和简称（约 700 条），用于识别“张冠李戴”；项目所在地不在表内时只依赖模型检查。
+
+### 13.10 需要真实环境核对的部分
+
+开发环境的网络拦截了 mineru.net、aistudio.baidu.com、paddleocr.aistudio-app.com 和各政府网站，以下部分只能用本地模拟服务测试，需在用户电脑上用真实 Key 核对：MinerU 和 PaddleOCR 的解析、各家模型的联网参数、白名单站点的抓取与附件识别、GitHub 发布版查询。
+
