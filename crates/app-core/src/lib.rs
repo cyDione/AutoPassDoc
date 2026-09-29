@@ -2,6 +2,7 @@
 //! API keys, model providers, reviewers, the AI-fix pipeline and the
 //! knowledge-base glue.
 
+pub mod backup;
 pub mod core;
 pub mod dataset;
 pub mod error;
@@ -14,6 +15,7 @@ pub mod reviewers;
 pub mod secrets;
 pub mod settings;
 pub mod store;
+pub mod update;
 pub mod web;
 
 pub use crate::core::{Core, RoleName, Target};

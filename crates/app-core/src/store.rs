@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::settings::Settings;
 
 const MIGRATIONS: &[&str] = &[r#"
@@ -194,6 +194,11 @@ impl Store {
 
     fn init(conn: Connection) -> Result<Self> {
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
+        Self::migrate(&conn)?;
+        Ok(Self { conn })
+    }
+
+    fn migrate(conn: &Connection) -> Result<()> {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         for (i, sql) in MIGRATIONS.iter().enumerate().skip(version as usize) {
             let tx = conn.unchecked_transaction()?;
@@ -201,7 +206,65 @@ impl Store {
             tx.execute_batch(&format!("PRAGMA user_version = {}", i + 1))?;
             tx.commit()?;
         }
-        Ok(Self { conn })
+        Ok(())
+    }
+
+    /// Opens a database copied out of a backup, refusing one written by a
+    /// newer version of the app, and brings its schema up to date.
+    pub fn open_backup(path: &Path) -> Result<Self> {
+        let conn = Connection::open(path)?;
+        Self::check_version(&conn)?;
+        Self::init(conn)
+    }
+
+    fn check_version(conn: &Connection) -> Result<()> {
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version > MIGRATIONS.len() as i64 {
+            return Err(Error::Invalid(
+                "备份来自更新版本的软件，请先升级软件再导入".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// Writes a consistent copy of the database to `path` (`VACUUM INTO`).
+    /// An existing file at `path` is replaced.
+    pub fn snapshot_to(&self, path: &Path) -> Result<()> {
+        match std::fs::remove_file(path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+        let target = path
+            .to_str()
+            .ok_or_else(|| Error::Invalid(format!("路径含有无法识别的字符：{}", path.display())))?;
+        self.conn.execute("VACUUM INTO ?1", [target])?;
+        Ok(())
+    }
+
+    /// Replaces the whole database with the one at `path` through SQLite's
+    /// backup API, so this connection stays open, then upgrades its schema.
+    pub fn restore_from(&mut self, path: &Path) -> Result<()> {
+        Self::check_version(&Connection::open(path)?)?;
+        self.conn.restore(
+            rusqlite::MAIN_DB,
+            path,
+            None::<fn(rusqlite::backup::Progress)>,
+        )?;
+        self.conn
+            .execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
+        Self::migrate(&self.conn)
+    }
+
+    /// Number of fix cases, decided or not.
+    pub fn case_total(&self) -> Result<usize> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM cases", [], |r| r.get(0))?;
+        Ok(n as usize)
     }
 
     // Settings

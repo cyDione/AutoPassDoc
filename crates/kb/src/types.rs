@@ -116,3 +116,21 @@ pub struct KbStats {
     /// Embedded chunks per embedding model.
     pub embedded: BTreeMap<String, usize>,
 }
+
+/// Outcome of [`KnowledgeBase::merge_from`](crate::KnowledgeBase::merge_from).
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeStats {
+    /// Documents copied in.
+    pub documents_added: usize,
+    /// Documents whose content (SHA-256) was already here.
+    pub documents_skipped: usize,
+    pub chunks_added: usize,
+    pub embeddings_added: usize,
+    /// Files of added documents that were missing from the source folder;
+    /// their text is searchable, but the original cannot be opened.
+    pub missing_files: Vec<String>,
+    /// Embedding models whose vectors were not copied because their
+    /// dimension differs from the vectors stored here under the same name.
+    pub skipped_models: Vec<String>,
+}

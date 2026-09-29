@@ -26,7 +26,7 @@ mod types;
 mod vector;
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -524,6 +524,117 @@ impl KnowledgeBase {
         })
     }
 
+    /// Writes a consistent copy of the database to `path` (`VACUUM INTO`),
+    /// e.g. for a backup. An existing file at `path` is replaced.
+    pub fn snapshot_to(&self, path: &Path) -> Result<()> {
+        match std::fs::remove_file(path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+        let target = path.to_str().ok_or_else(|| {
+            Error::Io(std::io::Error::other(format!(
+                "路径含有无法识别的字符：{}",
+                path.display()
+            )))
+        })?;
+        self.conn.execute("VACUUM INTO ?1", [target])?;
+        Ok(())
+    }
+
+    /// Copies in the documents of the knowledge base in `other_dir` whose
+    /// content (SHA-256) is not here yet: the stored original, metadata,
+    /// chunks, keyword index rows and the embeddings of every model whose
+    /// dimension matches the vectors stored here under the same name.
+    /// `other_dir` is opened (and its schema upgraded) but otherwise left as is.
+    pub fn merge_from(&mut self, other_dir: &Path) -> Result<MergeStats> {
+        let other = KnowledgeBase::open(other_dir)?;
+        let mut stats = MergeStats::default();
+
+        let mut known: HashSet<String> = {
+            let mut stmt = self.conn.prepare("SELECT sha256 FROM documents")?;
+            stmt.query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        let mut docs = Vec::new();
+        {
+            let mut stmt = other
+                .conn
+                .prepare("SELECT id, sha256 FROM documents ORDER BY id")?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (id, sha) in rows {
+                if known.insert(sha) {
+                    docs.push(id);
+                } else {
+                    stats.documents_skipped += 1;
+                }
+            }
+        }
+        if docs.is_empty() {
+            return Ok(stats);
+        }
+
+        // Embedding models of the other side mapped to ours: (id here, dim).
+        let mut models: HashMap<i64, (i64, usize)> = HashMap::new();
+        {
+            let mut stmt = other.conn.prepare("SELECT id, name, dim FROM models")?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)? as usize,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (other_id, name, dim) in rows {
+                match self.model(&name)? {
+                    Some((id, d)) if d == dim => {
+                        models.insert(other_id, (id, dim));
+                    }
+                    Some(_) => stats.skipped_models.push(name),
+                    None => {
+                        self.conn.execute(
+                            "INSERT INTO models (name, dim) VALUES (?1, ?2)",
+                            params![name, dim as i64],
+                        )?;
+                        models.insert(other_id, (self.conn.last_insert_rowid(), dim));
+                    }
+                }
+            }
+        }
+
+        let files_dir = self.files_dir();
+        std::fs::create_dir_all(&files_dir)?;
+        let other_files = other.files_dir();
+        for other_id in docs {
+            let added = merge_document(&mut self.conn, &other.conn, other_id, &models)?;
+            let source = other_files.join(&added.other_stored_name);
+            match std::fs::copy(&source, files_dir.join(&added.stored_name)) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    stats.missing_files.push(added.file_name.clone());
+                }
+                Err(e) => {
+                    // No document row without its file.
+                    let tx = self.conn.transaction()?;
+                    delete_chunk_rows(&tx, added.doc_id)?;
+                    tx.execute("DELETE FROM documents WHERE id = ?1", [added.doc_id])?;
+                    tx.commit()?;
+                    self.vectors.get_mut().clear();
+                    return Err(e.into());
+                }
+            }
+            stats.documents_added += 1;
+            stats.chunks_added += added.chunks;
+            stats.embeddings_added += added.embeddings;
+        }
+        // Loaded again on the next vector search.
+        self.vectors.get_mut().clear();
+        Ok(stats)
+    }
+
     fn files_dir(&self) -> PathBuf {
         self.root.join(FILES_DIR)
     }
@@ -549,6 +660,178 @@ const DOCUMENT_SQL: &str = "SELECT d.id, d.file_name, d.original_path, d.stored_
     d.sha256, d.title, d.doc_number, d.issuer, d.date, d.char_count, d.warnings, d.imported_at,
     (SELECT COUNT(*) FROM chunks c WHERE c.doc_id = d.id)
     FROM documents d";
+
+struct MergedDocument {
+    doc_id: i64,
+    file_name: String,
+    stored_name: String,
+    other_stored_name: String,
+    chunks: usize,
+    embeddings: usize,
+}
+
+/// Copies one document's rows from `other` in one transaction. Keyword
+/// index rows are rebuilt, since the FTS table stores no content.
+fn merge_document(
+    conn: &mut Connection,
+    other: &Connection,
+    other_id: i64,
+    models: &HashMap<i64, (i64, usize)>,
+) -> Result<MergedDocument> {
+    let (file_name, other_stored_name, meta) = other.query_row(
+        "SELECT file_name, stored_name, title, doc_number, issuer, date FROM documents WHERE id = ?1",
+        [other_id],
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                DocMeta {
+                    title: r.get(2)?,
+                    doc_number: r.get(3)?,
+                    issuer: r.get(4)?,
+                    date: r.get(5)?,
+                },
+            ))
+        },
+    )?;
+
+    // Every document column both sides know, so columns added later travel too.
+    let ours = table_columns(conn, "documents")?;
+    let columns: Vec<String> = table_columns(other, "documents")?
+        .into_iter()
+        .filter(|c| c != "id" && ours.contains(c))
+        .collect();
+    let values: Vec<rusqlite::types::Value> = other.query_row(
+        &format!("SELECT {} FROM documents WHERE id = ?1", columns.join(", ")),
+        [other_id],
+        |r| (0..columns.len()).map(|i| r.get(i)).collect(),
+    )?;
+
+    let tx = conn.transaction()?;
+    tx.execute(
+        &format!(
+            "INSERT INTO documents ({}) VALUES ({})",
+            columns.join(", "),
+            vec!["?"; columns.len()].join(", ")
+        ),
+        rusqlite::params_from_iter(values),
+    )?;
+    let doc_id = tx.last_insert_rowid();
+    let stored_name = format!("{doc_id}-{}", sanitize_file_name(&file_name));
+    tx.execute(
+        "UPDATE documents SET stored_name = ?2 WHERE id = ?1",
+        params![doc_id, stored_name],
+    )?;
+
+    let mut parent_ids: HashMap<i64, i64> = HashMap::new();
+    {
+        let mut select = other.prepare(
+            "SELECT id, char_start, char_end, text FROM parents WHERE doc_id = ?1 ORDER BY id",
+        )?;
+        let mut insert = tx.prepare_cached(
+            "INSERT INTO parents (doc_id, char_start, char_end, text) VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        let mut rows = select.query([other_id])?;
+        while let Some(r) = rows.next()? {
+            insert.execute(params![
+                doc_id,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?
+            ])?;
+            parent_ids.insert(r.get(0)?, tx.last_insert_rowid());
+        }
+    }
+
+    let doc_tokens = doc_index_text(&meta, &file_name);
+    let mut chunk_ids: HashMap<i64, i64> = HashMap::new();
+    {
+        let mut select = other.prepare(
+            "SELECT id, parent_id, heading_path, char_start, char_end, text
+             FROM chunks WHERE doc_id = ?1 ORDER BY id",
+        )?;
+        let mut insert = tx.prepare_cached(
+            "INSERT INTO chunks (doc_id, parent_id, heading_path, char_start, char_end, text)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        let mut fts = tx.prepare_cached(
+            "INSERT INTO chunks_fts (rowid, body, head, doc) VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        let mut last_head: Option<(String, String)> = None;
+        let mut rows = select.query([other_id])?;
+        while let Some(r) = rows.next()? {
+            let Some(&parent_id) = parent_ids.get(&r.get::<_, i64>(1)?) else {
+                continue;
+            };
+            let path: String = r.get(2)?;
+            let text: String = r.get(5)?;
+            insert.execute(params![
+                doc_id,
+                parent_id,
+                path,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                text
+            ])?;
+            let chunk_id = tx.last_insert_rowid();
+            chunk_ids.insert(r.get(0)?, chunk_id);
+            if last_head.as_ref().is_none_or(|(p, _)| *p != path) {
+                let head = tokenize::index_text(&db::split_path(&path).join(" "));
+                last_head = Some((path, head));
+            }
+            let head = &last_head.as_ref().expect("set above").1;
+            fts.execute(params![
+                chunk_id,
+                tokenize::index_text(&text),
+                head,
+                doc_tokens
+            ])?;
+        }
+    }
+
+    let mut embeddings = 0;
+    {
+        let mut select = other.prepare(
+            "SELECT e.chunk_id, e.model_id, e.vector FROM embeddings e
+             JOIN chunks c ON c.id = e.chunk_id WHERE c.doc_id = ?1",
+        )?;
+        let mut insert = tx.prepare_cached(
+            "INSERT OR REPLACE INTO embeddings (chunk_id, model_id, vector) VALUES (?1, ?2, ?3)",
+        )?;
+        let mut rows = select.query([other_id])?;
+        while let Some(r) = rows.next()? {
+            let (Some(&chunk_id), Some(&(model_id, dim))) = (
+                chunk_ids.get(&r.get::<_, i64>(0)?),
+                models.get(&r.get::<_, i64>(1)?),
+            ) else {
+                continue;
+            };
+            let vector: Vec<u8> = r.get(2)?;
+            if vector.len() != dim * 4 {
+                continue;
+            }
+            insert.execute(params![chunk_id, model_id, vector])?;
+            embeddings += 1;
+        }
+    }
+    tx.commit()?;
+    Ok(MergedDocument {
+        doc_id,
+        file_name,
+        stored_name,
+        other_stored_name,
+        chunks: chunk_ids.len(),
+        embeddings,
+    })
+}
+
+fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(columns)
+}
 
 fn delete_chunk_rows(tx: &Transaction, doc_id: i64) -> Result<()> {
     tx.execute(
