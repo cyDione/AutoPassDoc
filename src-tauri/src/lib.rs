@@ -3,6 +3,7 @@
 //! protocol.
 
 mod ai;
+mod data;
 mod documents;
 mod knowledge;
 
@@ -121,6 +122,11 @@ pub fn run() {
             knowledge::kb_search,
             knowledge::kb_embed,
             knowledge::kb_clear_embeddings,
+            data::export_backup,
+            data::inspect_backup,
+            data::import_backup,
+            data::app_info,
+            data::check_update,
             knowledge::web_search,
             knowledge::web_download_to_kb,
         ])
