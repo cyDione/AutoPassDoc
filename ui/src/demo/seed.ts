@@ -71,6 +71,7 @@ export function seedSettings(): Settings {
       profileEvery: 10,
     },
     web: { mode: "auto", modelSearch: null, engine: "bing", whitelist: [...DEFAULT_WHITELIST] },
+    kb: { parser: "builtin", mineruModel: "vlm", paddleocrBaseUrl: "https://paddleocr.aistudio-app.com", paddleocrModel: "PaddleOCR-VL-1.6" },
   };
 }
 
@@ -212,6 +213,7 @@ export function seedKbDocuments(): KbDocument[] {
     importedAt: now - daysAgo * DAY,
     sha256: `${id}`.padStart(64, "a"),
     warnings,
+    parser: "builtin",
   });
   return [
     d(1, "国务院办公厅关于印发《政务信息化项目建设管理办法》的通知", "政务信息化项目建设管理办法.pdf", "pdf", "国办发〔2024〕12号", "国务院办公厅", "2024-03-15", 142, 38_200, 20),

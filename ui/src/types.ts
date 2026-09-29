@@ -272,6 +272,40 @@ export interface Settings {
     profileEvery: number;
   };
   web: WebSettings;
+  kb: KbSettings;
+}
+
+/** Who reads PDFs and images into the knowledge base. */
+export type ParserKind = "builtin" | "mineru" | "paddleocr";
+
+export interface KbSettings {
+  /** An online parser is used only once its key is saved (enhanced mode). */
+  parser: ParserKind;
+  /** MinerU model: `vlm` or `pipeline`. */
+  mineruModel: string;
+  paddleocrBaseUrl: string;
+  /** `PaddleOCR-VL-1.6` or `PP-StructureV3`. */
+  paddleocrModel: string;
+}
+
+export interface ParserInfo {
+  kind: Exclude<ParserKind, "builtin">;
+  name: string;
+  hasKey: boolean;
+  siteUrl: string;
+  keyUrl: string;
+  docsUrl: string;
+  consoleUrl: string;
+  quotaNote: string;
+}
+
+export interface ParserTest {
+  ok: boolean;
+  message: string;
+  /** Neither service reports its quota yet. */
+  quota: { remaining: number; total: number | null; unit: string } | null;
+  quotaNote: string;
+  consoleUrl: string;
 }
 
 /** How a provider's own web search is switched on. */
@@ -353,6 +387,16 @@ export interface KbDocument {
   sha256: string;
   /** Problems from the last import, e.g. a scanned PDF that needs OCR. */
   warnings: string[];
+  /** Who parsed it: builtin, mineru or paddleocr. */
+  parser: string;
+}
+
+/** A knowledge-base document as the viewer shows it. */
+export interface KbDocumentView {
+  document: KbDocument;
+  /** `headingLevel`: numbering rank (0 附件 … 9 ①), null for body text. */
+  lines: { text: string; headingLevel: number | null }[];
+  chunks: { chunkId: number; charStart: number; charEnd: number; headingPath: string[] }[];
 }
 
 export interface KbImportReport {
@@ -362,6 +406,7 @@ export interface KbImportReport {
   unchanged: boolean;
   warnings: string[];
   error: string | null;
+  parser?: string;
 }
 
 export interface KbHit {
@@ -424,4 +469,59 @@ export interface WebSearchOutcome {
   via: "model" | "local";
   /** What was tried and why it fell back. */
   notes: string[];
+}
+
+export interface BackupManifest {
+  format: number;
+  appVersion: string;
+  /** Unix seconds. */
+  createdAt: number;
+  documents: number;
+  chunks: number;
+  reviewers: number;
+  cases: number;
+}
+
+export interface BackupExport {
+  path: string;
+  size: number;
+  manifest: BackupManifest;
+  missingFiles: string[];
+}
+
+export type BackupImportMode = "replace" | "merge";
+
+export interface BackupImport {
+  mode: BackupImportMode;
+  manifest: BackupManifest;
+  reviewersAdded: number;
+  reviewersSkipped: number;
+  casesAdded: number;
+  casesSkipped: number;
+  profilesAdded: number;
+  documentsAdded: number;
+  documentsSkipped: number;
+  autoBackup: string | null;
+}
+
+export interface BackupProgress {
+  done: number;
+  total: number;
+  step: string;
+}
+
+export interface AppInfo {
+  version: string;
+  dataDir: string;
+}
+
+export interface UpdateInfo {
+  current: string;
+  latest: string | null;
+  hasUpdate: boolean;
+  name: string | null;
+  notes: string;
+  url: string | null;
+  publishedAt: string | null;
+  assets: { name: string; url: string; size: number }[];
 }

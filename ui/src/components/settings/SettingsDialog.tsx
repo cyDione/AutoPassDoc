@@ -1,26 +1,30 @@
 import { useCallback, useEffect, useState } from "react";
-import { Cpu, Database, Globe, Server, SlidersHorizontal, Sparkles, X } from "lucide-react";
+import { BookOpen, Cpu, Database, Globe, Info, Server, SlidersHorizontal, Sparkles, X } from "lucide-react";
 import type { Backend } from "../../api";
 import type { CommentLayout } from "../../hooks/useCommentLayout";
 import type { Theme } from "../../hooks/useTheme";
 import type { ModelView, ProviderView, Settings } from "../../types";
 import { errorMessage } from "../../util";
+import { AboutTab } from "./AboutTab";
 import { DataTab } from "./DataTab";
 import { FixTab } from "./FixTab";
 import { GeneralTab } from "./GeneralTab";
+import { KbTab } from "./KbTab";
 import { ProvidersTab } from "./ProvidersTab";
 import { RolesTab } from "./RolesTab";
 import { WebTab } from "./WebTab";
 
-export type SettingsTab = "general" | "providers" | "roles" | "fix" | "web" | "data";
+export type SettingsTab = "general" | "providers" | "roles" | "fix" | "kb" | "web" | "data" | "about";
 
 const TABS = [
   ["general", SlidersHorizontal, "通用"],
   ["providers", Server, "模型服务"],
   ["roles", Cpu, "模型分配"],
   ["fix", Sparkles, "AI 修复"],
+  ["kb", BookOpen, "知识库"],
   ["web", Globe, "联网搜索"],
   ["data", Database, "数据"],
+  ["about", Info, "关于"],
 ] as const;
 
 interface Props {
@@ -128,7 +132,7 @@ export function SettingsDialog({ backend, initialTab, theme, onTheme, layout, on
             ))}
           </nav>
           <div key={tab} className="dialog-content scroll">
-            {!ready && !error && tab !== "general" && tab !== "data" && (
+            {!ready && !error && tab !== "general" && tab !== "data" && tab !== "about" && (
               <div className="loading">
                 <span className="spinner" /> 正在加载…
               </div>
@@ -150,7 +154,9 @@ export function SettingsDialog({ backend, initialTab, theme, onTheme, layout, on
             {tab === "general" && <GeneralTab theme={theme} onTheme={onTheme} layout={layout} onLayout={onLayout} />}
             {ready && tab === "fix" && <FixTab fix={draft.fix} onChange={(fix) => setDraft({ ...draft, fix })} />}
             {ready && tab === "web" && <WebTab web={draft.web} onChange={(web) => setDraft({ ...draft, web })} />}
+            {ready && tab === "kb" && <KbTab backend={backend} kb={draft.kb} onChange={(kb) => setDraft({ ...draft, kb })} />}
             {tab === "data" && <DataTab backend={backend} />}
+            {tab === "about" && <AboutTab backend={backend} />}
           </div>
         </div>
         <div className="dialog-foot">

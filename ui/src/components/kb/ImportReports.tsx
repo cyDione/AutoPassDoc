@@ -33,6 +33,7 @@ export function ImportReports({ reports, onDismiss }: Props) {
               <CheckCircle2 size={14} className="icon positive" />
             )}
             <span className="file">{r.fileName}</span>
+            {r.parser && r.parser !== "builtin" && <span className="tag parser-tag">{r.parser === "mineru" ? "MinerU" : "PaddleOCR"}</span>}
             <span className="status">{r.error ? "导入失败" : r.unchanged ? "未变化，已跳过" : `${r.chunks} 个片段`}</span>
           </div>
           {r.error && <div className="report-note error">{r.error}</div>}

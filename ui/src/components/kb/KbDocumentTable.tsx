@@ -1,22 +1,24 @@
 import { memo, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { AlertTriangle, ExternalLink, Pencil, Search, Trash2 } from "lucide-react";
+import { AlertTriangle, ExternalLink, Eye, Pencil, Search, Trash2 } from "lucide-react";
 import type { KbDocument, KbMeta } from "../../types";
 import { errorMessage, formatDay, formatNumber } from "../../util";
 import { ConfirmButton } from "../ConfirmButton";
 
 const ROW_HEIGHT = 52;
 
+const PARSER_TAG: Record<string, string> = { mineru: "MinerU", paddleocr: "PaddleOCR" };
 
 interface Props {
   documents: KbDocument[];
   onOpen: (path: string) => void;
+  onView: (doc: KbDocument) => void;
   onRemove: (doc: KbDocument) => Promise<void>;
   onUpdateMeta: (doc: KbDocument, meta: KbMeta) => Promise<void>;
 }
 
 /** All knowledge-base documents; virtualized so thousands of rows stay fast. */
-export const KbDocumentTable = memo(function KbDocumentTable({ documents, onOpen, onRemove, onUpdateMeta }: Props) {
+export const KbDocumentTable = memo(function KbDocumentTable({ documents, onOpen, onView, onRemove, onUpdateMeta }: Props) {
   const [filter, setFilter] = useState("");
   const [editing, setEditing] = useState<number | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -84,6 +86,7 @@ export const KbDocumentTable = memo(function KbDocumentTable({ documents, onOpen
                       </span>
                     </span>
                     <span className="file" title={d.originalPath}>
+                      {PARSER_TAG[d.parser] && <span className="tag parser-tag">{PARSER_TAG[d.parser]}</span>}
                       {d.fileName}
                     </span>
                   </span>
@@ -97,6 +100,9 @@ export const KbDocumentTable = memo(function KbDocumentTable({ documents, onOpen
                   <span className="num">{formatNumber(d.chunkCount)}</span>
                   <span className="muted col-imported">{formatDay(d.importedAt)}</span>
                   <span className="row-actions">
+                    <button type="button" className="icon-btn sm" title="查看内容" onClick={() => onView(d)}>
+                      <Eye size={14} />
+                    </button>
                     <button type="button" className="icon-btn sm" title="编辑元数据" onClick={() => setEditing(editing === d.id ? null : d.id)}>
                       <Pencil size={14} />
                     </button>

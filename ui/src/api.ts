@@ -1,5 +1,11 @@
 import type {
+  AppInfo,
   AuthorView,
+  BackupExport,
+  BackupImport,
+  BackupImportMode,
+  BackupManifest,
+  BackupProgress,
   BlockView,
   Case,
   DocState,
@@ -8,6 +14,7 @@ import type {
   FixProposal,
   FixRequest,
   KbDocument,
+  KbDocumentView,
   KbHit,
   KbImportReport,
   KbMeta,
@@ -17,6 +24,9 @@ import type {
   ModelRoleName,
   ModelView,
   OpenedDoc,
+  ParserInfo,
+  ParserKind,
+  ParserTest,
   PreReviewItem,
   ProbeResult,
   ProviderView,
@@ -24,6 +34,7 @@ import type {
   ReviewerProfile,
   Settings,
   Summary,
+  UpdateInfo,
   WebSearchOutcome,
 } from "./types";
 
@@ -116,6 +127,11 @@ export interface Backend {
   kbStats(): Promise<KbStats>;
   /** Imports the given files, or asks for files when `paths` is omitted. */
   kbImport(paths?: string[]): Promise<KbImportReport[]>;
+  /** Asks for a folder; null when cancelled. */
+  pickFolder(): Promise<string | null>;
+  /** How many files importing these paths would read, folders expanded. */
+  kbCountImport(paths: string[]): Promise<number>;
+  kbDocumentView(docId: number): Promise<KbDocumentView>;
   kbRemove(docId: number): Promise<void>;
   kbUpdateMeta(docId: number, meta: KbMeta): Promise<KbDocument>;
   kbSearch(text: string): Promise<KbHit[]>;
@@ -128,6 +144,24 @@ export interface Backend {
   openPath(path: string): Promise<void>;
   /** Opens a web page in the default browser. */
   openUrl(url: string): Promise<void>;
+
+  // Enhanced parsing (MinerU / PaddleOCR)
+  parserInfos(): Promise<ParserInfo[]>;
+  setParserKey(kind: ParserKind, key: string): Promise<ParserInfo>;
+  clearParserKey(kind: ParserKind): Promise<void>;
+  /** Tests `key` when given, else the saved key. */
+  testParser(kind: ParserKind, key?: string): Promise<ParserTest>;
+
+  // Backup and about
+  /** Asks where to save, then writes a backup of the knowledge base and reviewers; null when cancelled. */
+  exportBackup(): Promise<BackupExport | null>;
+  /** Asks for a backup file; null when cancelled. */
+  pickBackup(): Promise<string | null>;
+  inspectBackup(path: string): Promise<BackupManifest>;
+  importBackup(path: string, mode: BackupImportMode): Promise<BackupImport>;
+  onBackupProgress(handler: (p: BackupProgress) => void): Unsubscribe;
+  appInfo(): Promise<AppInfo>;
+  checkUpdate(): Promise<UpdateInfo>;
 
   // Web
   /** Searches the web: the chat model's own search first, else whitelisted sites from this machine. */
@@ -263,13 +297,19 @@ async function tauriBackend(): Promise<Backend> {
         const picked = await dialog.open({
           multiple: true,
           directory: false,
-          filters: [{ name: "资料文件", extensions: ["docx", "pdf", "txt", "md"] }],
+          filters: [{ name: "资料文件", extensions: ["docx", "pdf", "txt", "md", "markdown", "png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp"] }],
         });
         if (!picked) return [];
         files = Array.isArray(picked) ? picked : [picked];
       }
       return invoke<KbImportReport[]>("kb_import", { paths: files });
     },
+    async pickFolder() {
+      const picked = await dialog.open({ multiple: false, directory: true });
+      return typeof picked === "string" ? picked : null;
+    },
+    kbCountImport: (paths) => invoke("kb_count_import", { paths }),
+    kbDocumentView: (docId) => invoke("kb_document_view", { docId }),
     kbRemove: (docId) => invoke("kb_remove", { docId }),
     kbUpdateMeta: (docId, meta) => invoke("kb_update_meta", { docId, meta }),
     kbSearch: (text) => invoke("kb_search", { text }),
@@ -278,6 +318,32 @@ async function tauriBackend(): Promise<Backend> {
     onKbProgress: (handler) => subscribe<KbProgress>("kb-progress", handler),
     openPath: (path) => opener.openPath(path),
     openUrl: (url) => opener.openUrl(url),
+    parserInfos: () => invoke("parser_infos"),
+    setParserKey: (kind, key) => invoke("set_parser_key", { kind, key }),
+    clearParserKey: (kind) => invoke("clear_parser_key", { kind }),
+    testParser: (kind, key) => invoke("test_parser", { kind, key: key ?? null }),
+    async exportBackup() {
+      const stamp = new Date().toISOString().slice(0, 10).replaceAll("-", "");
+      const path = await dialog.save({
+        defaultPath: `AutoPassDoc-备份-${stamp}.apdbak`,
+        filters: [{ name: "AutoPassDoc 备份", extensions: ["apdbak", "zip"] }],
+      });
+      if (!path) return null;
+      return invoke<BackupExport>("export_backup", { path });
+    },
+    async pickBackup() {
+      const picked = await dialog.open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "AutoPassDoc 备份", extensions: ["apdbak", "zip"] }],
+      });
+      return typeof picked === "string" ? picked : null;
+    },
+    inspectBackup: (path) => invoke("inspect_backup", { path }),
+    importBackup: (path, mode) => invoke("import_backup", { path, mode }),
+    onBackupProgress: (handler) => subscribe<BackupProgress>("backup-progress", handler),
+    appInfo: () => invoke("app_info"),
+    checkUpdate: () => invoke("check_update"),
     webSearch: (query) => invoke("web_search", { query }),
     webDownloadToKb: (url) => invoke("web_download_to_kb", { url }),
 

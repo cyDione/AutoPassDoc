@@ -433,3 +433,187 @@
   font-size: 12.5px;
   width: 100%;
 }
+
+.data-card + .data-card,
+.parser-card {
+  margin-top: 12px;
+}
+
+.parser-card.active {
+  border-color: var(--accent);
+}
+
+.parser-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.parser-head .link-btn,
+.quota-note .link-btn,
+.update-assets .link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12.5px;
+}
+
+.parser-card .setting-hint {
+  margin: 6px 0 10px;
+}
+
+.key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.key-row .input-icon {
+  flex: 1;
+}
+
+.parser-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12.5px;
+}
+
+.parser-result.ok {
+  color: var(--positive);
+}
+
+.parser-result.error {
+  color: var(--danger);
+}
+
+.quota-note {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.about-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+}
+
+.about-card .setting-hint {
+  margin: 6px 0;
+}
+
+.about-path {
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.about-card .form-actions {
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.update-box {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+}
+
+.update-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.update-assets {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin-top: 6px;
+}
+
+.changelog {
+  max-height: 360px;
+  overflow: auto;
+}
+
+.mini-md h4 {
+  margin: 14px 0 6px;
+  font-size: 14px;
+}
+
+.mini-md h4:first-child {
+  margin-top: 0;
+}
+
+.mini-md h5 {
+  margin: 10px 0 4px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.mini-md p,
+.mini-md ul {
+  margin: 4px 0;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text-2);
+}
+
+.mini-md ul {
+  padding-left: 18px;
+}
+
+.mini-md code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.restore-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+.data-card > .form-message {
+  display: block;
+  margin-top: 8px;
+}
+
+.backup-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  font-size: 12.5px;
+}
+
+.backup-progress .bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.backup-progress .bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s;
+}

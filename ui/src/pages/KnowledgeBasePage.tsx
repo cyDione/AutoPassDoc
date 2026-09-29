@@ -1,9 +1,10 @@
 import { memo, useCallback, useEffect, useState } from "react";
-import { AlertTriangle, FilePlus2, Library, UploadCloud, X, Zap } from "lucide-react";
+import { AlertTriangle, FilePlus2, FolderPlus, Library, UploadCloud, X, Zap } from "lucide-react";
 import type { Backend } from "../api";
 import { ImportReports } from "../components/kb/ImportReports";
 import { KbDocumentTable } from "../components/kb/KbDocumentTable";
 import { KbSearch } from "../components/kb/KbSearch";
+import { KbViewer } from "../components/kb/KbViewer";
 import type { Notify } from "../hooks/useDocumentSession";
 import type { KbDocument, KbImportReport, KbMeta, KbProgress, KbStats, Settings } from "../types";
 import { ConfirmButton } from "../components/ConfirmButton";
@@ -38,8 +39,8 @@ function DropZone({ onPick, busy }: { onPick: () => void; busy: boolean }) {
   return (
     <button type="button" className="drop-zone" disabled={busy} onClick={onPick}>
       <UploadCloud size={20} strokeWidth={1.6} />
-      <span>拖入 Word、PDF、TXT、Markdown 文件导入</span>
-      <span className="muted">或点击选择文件</span>
+      <span>拖入 Word、PDF、TXT、Markdown 文件或整个文件夹导入</span>
+      <span className="muted">或点击选择文件；增强模式下还可导入扫描件和图片</span>
     </button>
   );
 }
@@ -52,6 +53,7 @@ export const KnowledgeBasePage = memo(function KnowledgeBasePage({ backend, acti
   const [failure, setFailure] = useState<{ stage: KbProgress["stage"]; message: string } | null>(null);
   const [reports, setReports] = useState<KbImportReport[]>([]);
   const [importing, setImporting] = useState(false);
+  const [viewing, setViewing] = useState<KbDocument | null>(null);
 
   const refresh = useCallback(() => {
     Promise.all([backend.kbDocuments(), backend.kbStats()])
@@ -105,6 +107,22 @@ export const KnowledgeBasePage = memo(function KnowledgeBasePage({ backend, acti
     },
     [backend, notify, refresh],
   );
+
+  const importFolder = async () => {
+    try {
+      const folder = await backend.pickFolder();
+      if (!folder) return;
+      const count = await backend.kbCountImport([folder]);
+      if (count === 0) {
+        notify("这个文件夹里没有可导入的文件（支持 Word、PDF、TXT、Markdown；增强模式下还支持图片）", true);
+        return;
+      }
+      if (count > 30 && !(await backend.confirm(`将导入文件夹及其子文件夹中的 ${count} 个文件，可能需要一些时间。`, "导入文件夹", "开始导入"))) return;
+      await importFiles([folder]);
+    } catch (e) {
+      notify(`导入失败：${errorMessage(e)}`, true);
+    }
+  };
 
   useEffect(() => {
     if (dropped) void importFiles(dropped.paths);
@@ -169,6 +187,9 @@ export const KnowledgeBasePage = memo(function KnowledgeBasePage({ backend, acti
           <button type="button" className="btn" disabled={busy} onClick={() => void importFiles()}>
             <FilePlus2 size={15} /> 导入资料
           </button>
+          <button type="button" className="btn" disabled={busy} title="导入文件夹及其子文件夹中全部支持的文件" onClick={() => void importFolder()}>
+            <FolderPlus size={15} /> 导入文件夹
+          </button>
           <button type="button" className="btn" disabled={!hasEmbedder || embedding || allEmbedded} title={embedTitle} onClick={() => void embed()}>
             <Zap size={15} /> 开始向量化
           </button>
@@ -226,10 +247,11 @@ export const KnowledgeBasePage = memo(function KnowledgeBasePage({ backend, acti
           <>
             <DropZone busy={busy} onPick={() => void importFiles()} />
             {reports.length > 0 && <ImportReports reports={reports} onDismiss={() => setReports([])} />}
-            {documents && <KbDocumentTable documents={documents} onOpen={openPath} onRemove={remove} onUpdateMeta={updateMeta} />}
+            {documents && <KbDocumentTable documents={documents} onOpen={openPath} onView={setViewing} onRemove={remove} onUpdateMeta={updateMeta} />}
             <KbSearch backend={backend} onOpen={openPath} />
           </>
         )}
+        {viewing && <KbViewer backend={backend} doc={viewing} onOpen={openPath} onClose={() => setViewing(null)} />}
       </div>
     </div>
   );

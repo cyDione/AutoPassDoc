@@ -8,13 +8,18 @@ import type {
   FixProposal,
   FixRequest,
   FixStage,
+  BackupManifest,
+  BackupProgress,
   KbDocument,
+  KbDocumentView,
   KbHit,
   KbImportReport,
   KbProgress,
   ModelProfileView,
   ModelView,
   OpenedDoc,
+  ParserInfo,
+  ParserKind,
   PreReviewItem,
   ProbeResult,
   Reviewer,
@@ -42,6 +47,38 @@ import {
 const SAMPLE_PATH = "示例/某市数字政府项目可研报告.docx";
 const GENERIC_AUTHOR = /^(administrator|admin|user|author|owner|作者|用户|未知|windows 用户|microsoft office 用户)$/i;
 const KB_FORMATS = new Set(["docx", "pdf", "txt", "md"]);
+const IMAGE_FORMATS = new Set(["png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp"]);
+const DEMO_FOLDER = "D:\\资料\\上海市政策文件";
+/** What the demo folder holds; the images are only read in enhanced mode. */
+const FOLDER_FILES = [
+  "上海市公共数据开放实施细则.docx",
+  "上海市数据条例.pdf",
+  "关于进一步促进上海市数字经济发展的若干意见.docx",
+  "上海市政务信息化项目管理办法（2025年修订）.pdf",
+  "子目录\\崇明区生态岛建设规划（2021-2035年）.pdf",
+  "子目录\\崇明区统计公报扫描件.png",
+  "说明.txt",
+];
+const PARSER_INFO: Record<Exclude<ParserKind, "builtin">, Omit<ParserInfo, "hasKey">> = {
+  mineru: {
+    kind: "mineru",
+    name: "MinerU",
+    siteUrl: "https://mineru.net",
+    keyUrl: "https://mineru.net/apiManage/token",
+    docsUrl: "https://mineru.net/apiManage/docs",
+    consoleUrl: "https://mineru.net/apiManage/token",
+    quotaNote: "MinerU 暂未提供余额查询接口，每天有免费页数，用量请在官网控制台查看。",
+  },
+  paddleocr: {
+    kind: "paddleocr",
+    name: "PaddleOCR",
+    siteUrl: "https://aistudio.baidu.com/paddleocr",
+    keyUrl: "https://aistudio.baidu.com/account/accessToken",
+    docsUrl: "https://ai.baidu.com/ai-doc/AISTUDIO/Kmfl2ycs0",
+    consoleUrl: "https://aistudio.baidu.com/account/accessToken",
+    quotaNote: "PaddleOCR（AI Studio）暂未提供余额查询接口，用量请在官网查看。",
+  },
+};
 
 /** Times cross the contract as Unix seconds. */
 const unixNow = () => Math.floor(Date.now() / 1000);
@@ -279,7 +316,34 @@ export function createDemoBackend(): Backend {
     return pick;
   }
 
-  async function importFiles(paths: string[]): Promise<KbImportReport[]> {
+  const parserKeys = new Set<ParserKind>();
+  const enhanced = () => (settings.kb.parser !== "builtin" && parserKeys.has(settings.kb.parser) ? settings.kb.parser : null);
+  const expandPaths = (paths: string[]) =>
+    paths.flatMap((p) =>
+      p === DEMO_FOLDER
+        ? FOLDER_FILES.filter((f) => enhanced() || !IMAGE_FORMATS.has(extension(f))).map((f) => `${DEMO_FOLDER}\\${f}`)
+        : [p],
+    );
+  const backupListeners = new Set<(p: BackupProgress) => void>();
+  const backupManifest = (): BackupManifest => ({
+    format: 1,
+    appVersion: "0.2.0",
+    createdAt: unixNow(),
+    documents: kbDocs.length,
+    chunks: totalChunks(),
+    reviewers: reviewers.length,
+    cases: cases.length,
+  });
+  async function backupSteps(steps: string[]) {
+    for (let i = 0; i < steps.length; i++) {
+      backupListeners.forEach((h) => h({ done: i, total: steps.length, step: steps[i] }));
+      await delay(350);
+    }
+    backupListeners.forEach((h) => h({ done: steps.length, total: steps.length, step: "完成" }));
+  }
+
+  async function importFiles(input: string[]): Promise<KbImportReport[]> {
+    const paths = expandPaths(input);
     const reports: KbImportReport[] = [];
     const total = paths.length;
     for (let i = 0; i < total; i++) {
@@ -288,7 +352,16 @@ export function createDemoBackend(): Backend {
       await delay(450);
       const format = extension(fileName);
       const existing = kbDocs.find((d) => d.fileName === fileName);
-      if (!KB_FORMATS.has(format)) {
+      const parser = enhanced() && (format === "pdf" || IMAGE_FORMATS.has(format)) ? enhanced()! : "builtin";
+      if (parser !== "builtin") {
+        for (let page = 1; page <= 3; page++) {
+          emitKb({ stage: "import", done: i, total, current: `${fileName}（${PARSER_INFO[parser].name} 解析中 ${page}/3 页）` });
+          await delay(300);
+        }
+      }
+      if (IMAGE_FORMATS.has(format) && parser === "builtin") {
+        reports.push({ fileName, docId: null, chunks: 0, unchanged: false, warnings: [], error: "图片需要增强解析：请在「设置 → 知识库」中选择 MinerU 或 PaddleOCR 并保存 Key 后再导入", parser });
+      } else if (!KB_FORMATS.has(format) && !IMAGE_FORMATS.has(format)) {
         reports.push({ fileName, docId: null, chunks: 0, unchanged: false, warnings: [], error: "不支持的文件格式，仅支持 Word、PDF、TXT 和 Markdown" });
       } else if (existing) {
         reports.push({ fileName, docId: existing.id, chunks: existing.chunkCount, unchanged: true, warnings: [], error: null });
@@ -298,7 +371,7 @@ export function createDemoBackend(): Backend {
         const title = fileName.replace(/\.[^.]+$/, "");
         const numbered = /〔\d{4}〕\d+号/.exec(title)?.[0] ?? null;
         const warnings = numbered ? [] : ["未识别到文号、发文机关和日期，可在列表中手动补充。"];
-        if (format === "pdf" && random() < 0.5) warnings.unshift("第 12–14 页是扫描图片，未能提取文字（需要 OCR）。");
+        if (format === "pdf" && parser === "builtin" && random() < 0.5) warnings.unshift("第 12–14 页是扫描图片，未能提取文字（需要 OCR）。");
         const doc: KbDocument & { warnings: string[] } = {
           id: nextKbId++,
           title,
@@ -312,9 +385,10 @@ export function createDemoBackend(): Backend {
           importedAt: unixNow(),
           sha256: fileName,
           warnings,
+          parser,
         };
         kbDocs = [doc, ...kbDocs];
-        reports.push({ fileName, docId: doc.id, chunks: chunkCount, unchanged: false, warnings, error: null });
+        reports.push({ fileName, docId: doc.id, chunks: chunkCount, unchanged: false, warnings, error: null, parser });
       }
     }
     emitKb({ stage: "import", done: total, total });
@@ -702,6 +776,32 @@ export function createDemoBackend(): Backend {
       return { documents: kbDocs.length, chunks, embedded: Math.min(embedded, chunks), embeddingModel: settings.roles.embedding.model || null };
     },
     kbImport: (paths) => importFiles(paths ?? ["数据安全管理办法（2024年修订）.pdf", "某市政务云管理暂行办法.docx"]),
+    pickFolder: async () => DEMO_FOLDER,
+    kbCountImport: async (paths) => expandPaths(paths).length,
+    async kbDocumentView(docId): Promise<KbDocumentView> {
+      const doc = kbDocs.find((d) => d.id === docId);
+      if (!doc) throw new Error("资料不存在");
+      await delay(250);
+      const lines: KbDocumentView["lines"] = [{ text: doc.title, headingLevel: null }];
+      if (doc.meta.docNumber) lines.push({ text: doc.meta.docNumber, headingLevel: null });
+      const passages = KB_PASSAGES.filter((p) => p.docId === docId);
+      const sections = passages.length > 0 ? passages : [{ headingPath: ["第一章 总则", "第一条"], text: `为规范${doc.title.slice(0, 16)}相关工作，制定本文件。` }];
+      const chunks: KbDocumentView["chunks"] = [];
+      let offset = lines.reduce((n, l) => n + l.text.length + 1, 0);
+      sections.forEach((p, i) => {
+        const [chapter, article] = p.headingPath;
+        lines.push({ text: chapter, headingLevel: /^第.+章/.test(chapter) ? 2 : 5 });
+        offset += chapter.length + 1;
+        const body = `${article ?? ""} ${p.text}`.trim();
+        lines.push({ text: body, headingLevel: article && /^第.+条/.test(article) ? 4 : null });
+        chunks.push({ chunkId: docId * 1000 + i, charStart: offset, charEnd: offset + body.length, headingPath: p.headingPath });
+        offset += body.length + 1;
+        const filler = "（演示内容）本条其余内容略。实际应用中这里显示导入时解析出的完整文字，表格按“列名：值”展开。";
+        lines.push({ text: filler, headingLevel: null });
+        offset += filler.length + 1;
+      });
+      return { document: clone(doc), lines, chunks };
+    },
     async kbRemove(docId) {
       const doc = kbDocs.find((d) => d.id === docId);
       kbDocs = kbDocs.filter((d) => d.id !== docId);
@@ -762,6 +862,73 @@ export function createDemoBackend(): Backend {
     async openUrl(url) {
       window.open(url, "_blank", "noopener");
     },
+    async parserInfos() {
+      return (["mineru", "paddleocr"] as const).map((k) => ({ ...PARSER_INFO[k], hasKey: parserKeys.has(k) }));
+    },
+    async setParserKey(kind, key) {
+      if (kind === "builtin") throw new Error("普通模式不需要 Key");
+      if (!key.trim()) throw new Error("请先填写 Key");
+      parserKeys.add(kind);
+      return { ...PARSER_INFO[kind], hasKey: true };
+    },
+    async clearParserKey(kind) {
+      parserKeys.delete(kind);
+    },
+    async testParser(kind, key) {
+      if (kind === "builtin") throw new Error("普通模式不需要 Key");
+      await delay(700);
+      const info = PARSER_INFO[kind];
+      const base = { quota: null, quotaNote: info.quotaNote, consoleUrl: info.consoleUrl };
+      if (!key && !parserKeys.has(kind)) return { ok: false, message: "请先填写 Key", ...base };
+      if (key && key.trim().length < 8) return { ok: false, message: "Key 无效：401 Unauthorized", ...base };
+      return { ok: true, message: `连接正常，${info.name} Key 有效`, ...base };
+    },
+
+    async exportBackup() {
+      await backupSteps(["导出审稿人和案例", "复制知识库", "打包原文件"]);
+      const m = backupManifest();
+      return { path: "D:\\备份\\AutoPassDoc-备份.apdbak", size: 18_400_000, manifest: m, missingFiles: [] };
+    },
+    pickBackup: async () => "D:\\备份\\AutoPassDoc-备份.apdbak",
+    async inspectBackup() {
+      await delay(200);
+      return { ...backupManifest(), createdAt: unixNow() - 3 * 86_400, documents: kbDocs.length + 2 };
+    },
+    async importBackup(_path, mode) {
+      await backupSteps(mode === "replace" ? ["自动备份当前数据", "还原审稿人", "还原知识库"] : ["合并审稿人", "合并案例", "合并知识库"]);
+      const m = backupManifest();
+      return {
+        mode,
+        manifest: m,
+        reviewersAdded: mode === "replace" ? reviewers.length : 0,
+        reviewersSkipped: mode === "replace" ? 0 : reviewers.length,
+        casesAdded: mode === "replace" ? cases.length : 2,
+        casesSkipped: mode === "replace" ? 0 : cases.length - 2,
+        profilesAdded: 0,
+        documentsAdded: 2,
+        documentsSkipped: mode === "replace" ? 0 : kbDocs.length,
+        autoBackup: mode === "replace" ? "C:\\Users\\演示\\AppData\\Roaming\\AutoPassDoc\\backups\\自动备份.apdbak" : null,
+      };
+    },
+    onBackupProgress(handler) {
+      backupListeners.add(handler);
+      return () => backupListeners.delete(handler);
+    },
+    appInfo: async () => ({ version: "0.2.0", dataDir: "C:\\Users\\演示\\AppData\\Roaming\\AutoPassDoc" }),
+    async checkUpdate() {
+      await delay(600);
+      return {
+        current: "0.2.0",
+        latest: "0.2.1",
+        hasUpdate: true,
+        name: "AutoPassDoc 0.2.1",
+        notes: "### 修复\n- 文档校对：修正跨页编号检查的误报。\n- 知识库：MinerU 解析大文件时的超时。",
+        url: "https://github.com/cyDione/AutoPassDoc/releases",
+        publishedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+        assets: [{ name: "AutoPassDoc_0.2.1_x64-setup.exe", url: "https://github.com/cyDione/AutoPassDoc/releases", size: 9_800_000 }],
+      };
+    },
+
     async webSearch(query) {
       const q = query.trim();
       if (!q) throw new Error("请输入要查找的内容");
