@@ -3,12 +3,14 @@
 //! and the neighbouring paragraphs.
 
 use docx_engine::{Document, Inline, Revision};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
 /// Comments spanning more paragraphs than this are left to the user.
 pub const MAX_PARAGRAPHS: usize = 6;
+/// A range the user selected by hand may be larger.
+pub const MAX_SELECTED_PARAGRAPHS: usize = 12;
 const NEIGHBOURS: usize = 2;
 
 #[derive(Debug, Clone, Serialize)]
@@ -22,6 +24,9 @@ pub struct FixInput {
     pub replies: Vec<(String, String)>,
     /// The words the comment is attached to.
     pub quote: String,
+    /// Text the user selected by hand because the reviewer's highlight
+    /// missed part of what the comment is about.
+    pub selection: Option<String>,
     /// Paragraphs to rewrite: (paragraph index, editable text).
     pub paragraphs: Vec<(usize, String)>,
     /// Headings above the comment, outermost first.
@@ -30,7 +35,28 @@ pub struct FixInput {
     pub after: Vec<String>,
 }
 
+/// Paragraphs the user selected in the document to rewrite instead of the
+/// ones under the comment's highlight.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Selection {
+    pub start_paragraph: usize,
+    pub end_paragraph: usize,
+    /// The selected text, for the model to know what exactly is meant.
+    #[serde(default)]
+    pub text: String,
+}
+
 pub fn gather(doc: &Document, comment_id: &str) -> Result<FixInput> {
+    gather_with(doc, comment_id, None)
+}
+
+/// Like [`gather`], rewriting the selected paragraphs when there is a selection.
+pub fn gather_with(
+    doc: &Document,
+    comment_id: &str,
+    selection: Option<&Selection>,
+) -> Result<FixInput> {
     let comment = doc
         .comment(comment_id)
         .ok_or_else(|| Error::Invalid(format!("找不到批注 {comment_id}")))?;
@@ -42,8 +68,26 @@ pub fn gather(doc: &Document, comment_id: &str) -> Result<FixInput> {
         .anchor
         .as_ref()
         .ok_or_else(|| Error::Invalid("这条批注没有对应的正文位置".into()))?;
-    let (first, last) = (anchor.start_paragraph, anchor.end_paragraph);
-    if last + 1 - first > MAX_PARAGRAPHS {
+    let (first, last) = match selection {
+        Some(s) => {
+            let (first, last) = (
+                s.start_paragraph.min(s.end_paragraph),
+                s.start_paragraph.max(s.end_paragraph),
+            );
+            if last >= doc.paragraphs.len() {
+                return Err(Error::Invalid("选中的范围超出了文档".into()));
+            }
+            if last + 1 - first > MAX_SELECTED_PARAGRAPHS {
+                return Err(Error::Invalid(format!(
+                    "选中了 {} 段，一次最多修改 {MAX_SELECTED_PARAGRAPHS} 段，请缩小选区",
+                    last + 1 - first
+                )));
+            }
+            (first, last)
+        }
+        None => (anchor.start_paragraph, anchor.end_paragraph),
+    };
+    if selection.is_none() && last + 1 - first > MAX_PARAGRAPHS {
         return Err(Error::Invalid(format!(
             "这条批注覆盖了 {} 段，超过 {MAX_PARAGRAPHS} 段，请手动修改或把批注拆细",
             last + 1 - first
@@ -101,6 +145,9 @@ pub fn gather(doc: &Document, comment_id: &str) -> Result<FixInput> {
         comment: root.text.clone(),
         replies,
         quote: quote(doc, anchor),
+        selection: selection
+            .map(|s| s.text.trim().to_string())
+            .filter(|t| !t.is_empty()),
         paragraphs,
         heading_path,
         before,
@@ -167,6 +214,25 @@ mod tests {
         );
         let joined: String = input.paragraphs.iter().map(|p| p.1.as_str()).collect();
         assert!(joined.contains(input.quote.lines().next().unwrap()));
+
+        // A hand-made selection replaces the highlighted paragraphs.
+        let anchor = c.anchor.as_ref().unwrap();
+        let end = (anchor.end_paragraph + 2).min(doc.paragraphs.len() - 1);
+        let sel = Selection {
+            start_paragraph: anchor.start_paragraph,
+            end_paragraph: end,
+            text: " 选中的文字 ".into(),
+        };
+        let wide = gather_with(&doc, &c.id, Some(&sel)).unwrap();
+        let indices: Vec<usize> = wide.paragraphs.iter().map(|p| p.0).collect();
+        assert_eq!(indices, (anchor.start_paragraph..=end).collect::<Vec<_>>());
+        assert_eq!(wide.selection.as_deref(), Some("选中的文字"));
+        let too_many = Selection {
+            start_paragraph: 0,
+            end_paragraph: MAX_SELECTED_PARAGRAPHS,
+            text: String::new(),
+        };
+        assert!(gather_with(&doc, &c.id, Some(&too_many)).is_err());
 
         // A reply resolves to its thread.
         if let Some(reply) = doc.comments.iter().find(|c| c.parent_id.is_some()) {

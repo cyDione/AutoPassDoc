@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Backend } from "../api";
-import type { BlockView, OpenedDoc } from "../types";
+import type { BlockView, FixSelection, OpenedDoc } from "../types";
 import { Block } from "./Blocks";
 
 /** Blocks are fetched from Rust in chunks as they scroll into view. */
@@ -25,6 +25,14 @@ interface Props {
   target: ScrollTarget | null;
   onCommentClick: (ids: string[]) => void;
   onTopBlockChange: (blockIndex: number) => void;
+  /** Text selected in the document, or null once the selection collapses. */
+  onSelectionChange: (selection: FixSelection | null) => void;
+}
+
+function paragraphOf(root: HTMLElement, node: Node | null): number | null {
+  const el = node instanceof Element ? node : node?.parentElement;
+  const p = el?.closest<HTMLElement>("[data-paragraph]");
+  return p && root.contains(p) ? Number(p.dataset.paragraph) : null;
 }
 
 /** Rough height before a block has been measured, so the scrollbar is close to right. */
@@ -46,6 +54,7 @@ export const DocumentView = memo(function DocumentView({
   target,
   onCommentClick,
   onTopBlockChange,
+  onSelectionChange,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const cache = useRef(new Map<number, BlockView>());
@@ -151,6 +160,27 @@ export const DocumentView = memo(function DocumentView({
     return () => cancelAnimationFrame(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target?.nonce]);
+
+  // Selections made in the document; one that moves elsewhere (a click in the
+  // comments panel) keeps the last document selection.
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root) return;
+    const onChange = () => {
+      const sel = document.getSelection();
+      if (!sel || sel.rangeCount === 0 || !root.contains(sel.anchorNode)) return;
+      const a = paragraphOf(root, sel.anchorNode);
+      const b = paragraphOf(root, sel.focusNode);
+      const text = sel.isCollapsed ? "" : sel.toString().trim();
+      if (a === null || b === null || !text) return onSelectionChange(null);
+      onSelectionChange({ startParagraph: Math.min(a, b), endParagraph: Math.max(a, b), text });
+    };
+    document.addEventListener("selectionchange", onChange);
+    return () => document.removeEventListener("selectionchange", onChange);
+  }, [onSelectionChange]);
+
+  // An edit or another document makes the old selection meaningless.
+  useEffect(() => onSelectionChange(null), [doc.docId, version, onSelectionChange]);
 
   const imageUrl = useCallback((relId: string) => backend.imageUrl(doc.docId, relId), [backend, doc.docId]);
 

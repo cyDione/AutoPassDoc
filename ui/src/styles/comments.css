@@ -131,7 +131,15 @@
 
 .card-actions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
   margin-top: 10px;
+}
+
+.card-hint {
+  font-size: 12px;
+  color: var(--text-3);
 }
 
 /* ---------- Fix progress and result ---------- */
@@ -178,6 +186,7 @@
 
 .fix-failed {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 8px;
   margin-top: 10px;

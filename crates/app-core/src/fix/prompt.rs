@@ -90,6 +90,12 @@ pub fn build(p: &PromptInput<'_>, budget: usize) -> (String, Included) {
     if !input.quote.is_empty() {
         required.push_str(&section("批注所指的原文", &input.quote));
     }
+    if let Some(selection) = &input.selection {
+        required.push_str(&section(
+            "用户选定的修改范围（审稿人的标注可能没选全，以这里为准）",
+            selection,
+        ));
+    }
     if !input.heading_path.is_empty() {
         required.push_str(&section("所在章节", &input.heading_path.join(" > ")));
     }
@@ -215,6 +221,7 @@ mod tests {
             comment: "数据来源不明确".into(),
             replies: vec![],
             quote: "带动就业500人".into(),
+            selection: None,
             paragraphs: vec![(3, "项目建成后预计带动就业500人。".into())],
             heading_path: vec!["一、项目概况".into(), "（二）建设效益".into()],
             before: vec!["上一段。".into()],
@@ -257,6 +264,20 @@ mod tests {
         );
         assert!(all.contains("[第1段] 项目建成后预计带动就业500人。"));
         assert!(all.contains("一、项目概况 > （二）建设效益"));
+        assert!(!all.contains("用户选定的修改范围"));
+
+        let selected = FixInput {
+            selection: Some("预计带动就业500人。".into()),
+            ..input.clone()
+        };
+        let (with_selection, _) = build(
+            &PromptInput {
+                input: &selected,
+                ..p
+            },
+            100_000,
+        );
+        assert!(with_selection.contains("用户选定的修改范围"));
 
         let (small, inc) = build(&p, estimate_tokens(SYSTEM) + 1_000);
         assert!(inc.passages < 5);

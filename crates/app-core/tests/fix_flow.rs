@@ -358,3 +358,54 @@ async fn works_without_a_decision_model() {
     assert_eq!(p.judge_error.as_deref(), Some("尚未配置决策模型"));
     assert!(p.warnings.iter().any(|w| w.contains("不需要修改")));
 }
+
+#[tokio::test]
+async fn fixes_a_range_the_user_selected() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let core = core(dir.path(), &server);
+    let mut doc = doc();
+    let comment_id = pick(&doc);
+    let anchor = doc.comment(&comment_id).unwrap().anchor.clone().unwrap();
+    let start = anchor.start_paragraph;
+    // The reviewer highlighted too little: take the next body paragraph too.
+    let end = (anchor.end_paragraph + 1..doc.paragraphs.len())
+        .find(|&i| doc.heading_level(i).is_none() && !doc.editable_text(i).trim().is_empty())
+        .unwrap();
+    let selection = context::Selection {
+        start_paragraph: start,
+        end_paragraph: end,
+        text: doc.editable_text(end),
+    };
+    let input = context::gather_with(&doc, &comment_id, Some(&selection)).unwrap();
+    assert_eq!(input.paragraphs.first().unwrap().0, start);
+    assert_eq!(input.paragraphs.last().unwrap().0, end);
+    let revised: Vec<String> = input
+        .paragraphs
+        .iter()
+        .map(|(_, t)| format!("{t}（已核实）"))
+        .collect();
+    let answer = json!({"paragraphs": revised, "explanation": "补充", "citations": []});
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(chat_reply(&answer.to_string()))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(jev_reply(0.95))
+        .mount(&server)
+        .await;
+
+    let job = FixJob {
+        doc_key: "doc".into(),
+        doc_name: "报告.docx".into(),
+        input,
+    };
+    let p = core
+        .propose(job, |c| Ok(doc.check_edits(c)?), |_| {})
+        .await
+        .unwrap();
+    core.apply_fix(&mut doc, &p.id, None, true).unwrap();
+    assert!(doc.editable_text(end).ends_with("（已核实）"));
+}

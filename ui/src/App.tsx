@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { FolderOpen } from "lucide-react";
 import { backend as backendPromise, type Backend } from "./api";
 import { CommentsPanel } from "./components/CommentsPanel";
@@ -8,10 +8,11 @@ import { SettingsDialog, type SettingsTab } from "./components/settings/Settings
 import { Sidebar, type Page } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { useDocumentSession } from "./hooks/useDocumentSession";
+import { usePanelWidth } from "./hooks/usePanelWidth";
 import { useTheme } from "./hooks/useTheme";
 import { KnowledgeBasePage, type DroppedFiles } from "./pages/KnowledgeBasePage";
 import { ReviewersPage } from "./pages/ReviewersPage";
-import type { CommentView, OpenedDoc, OutlineItem, Settings } from "./types";
+import type { CommentView, FixSelection, OpenedDoc, OutlineItem, Settings } from "./types";
 import { errorMessage, isTyping } from "./util";
 
 interface Toast {
@@ -39,6 +40,18 @@ export default function App() {
   const [topBlock, setTopBlock] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [kbDrop, setKbDrop] = useState<DroppedFiles | null>(null);
+  const [docSelection, setDocSelection] = useState<FixSelection | null>(null);
+  const panelWidth = usePanelWidth();
+  const onSelectionChange = useCallback(
+    (next: FixSelection | null) =>
+      setDocSelection((prev) =>
+        prev === next ||
+        (prev && next && prev.startParagraph === next.startParagraph && prev.endParagraph === next.endParagraph && prev.text === next.text)
+          ? prev
+          : next,
+      ),
+    [],
+  );
 
   useEffect(() => {
     backendPromise.then(setBackend);
@@ -262,8 +275,20 @@ export default function App() {
                   target={target}
                   onCommentClick={onDocCommentClick}
                   onTopBlockChange={setTopBlock}
+                  onSelectionChange={onSelectionChange}
                 />
-                <aside className={`panel${panelOpen ? "" : " closed"}`}>
+                <aside
+                  className={`panel${panelOpen ? "" : " closed"}${panelWidth.resizing ? " resizing" : ""}`}
+                  style={panelWidth.width === null ? undefined : ({ "--panel-w": `${panelWidth.width}px` } as CSSProperties)}
+                >
+                  <div
+                    className="panel-resizer"
+                    role="separator"
+                    aria-orientation="vertical"
+                    title="拖动调整批注栏宽度，双击恢复默认"
+                    onPointerDown={panelWidth.onPointerDown}
+                    onDoubleClick={panelWidth.reset}
+                  />
                   <CommentsPanel
                     key={doc.docId}
                     backend={backend}
@@ -271,6 +296,7 @@ export default function App() {
                     comments={doc.summary.comments}
                     authors={authors}
                     activeId={activeCommentId}
+                    selection={docSelection}
                     needsModel={settings !== null && !settings.roles.chat.model}
                     onSelect={selectComment}
                     edit={edit}

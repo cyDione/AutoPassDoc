@@ -716,11 +716,7 @@
   }
 
   .panel {
-    width: 330px;
-  }
-
-  .panel.closed {
-    margin-right: -330px;
+    --panel-w: 330px;
   }
 
   .profile-lists {

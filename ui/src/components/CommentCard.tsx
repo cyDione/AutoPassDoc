@@ -1,8 +1,8 @@
 import { memo, type MouseEvent } from "react";
-import { ArrowRight, Check, CheckCircle2, Circle, RotateCw, Sparkles } from "lucide-react";
+import { ArrowRight, Check, CheckCircle2, Circle, RotateCw, Sparkles, TextSelect } from "lucide-react";
 import type { FixEntry, FixActions } from "../hooks/useFixes";
 import { FIX_STAGE } from "../labels";
-import type { AuthorView, CommentView, FixStage } from "../types";
+import type { AuthorView, CommentView, FixSelection, FixStage } from "../types";
 import { avatarColor, avatarText, formatDate } from "../util";
 import { FixResult } from "./FixResult";
 
@@ -23,7 +23,29 @@ interface Props {
   /** Display name of any signature (the reviewer's name when mapped). */
   nameOf: (author: string) => string;
   fix: FixEntry | undefined;
+  /** Text selected in the document; only the active card gets it. */
+  selection: FixSelection | null;
   actions: CardActions;
+}
+
+function rangeLabel(s: FixSelection): string {
+  const [a, b] = [s.startParagraph + 1, s.endParagraph + 1];
+  return a === b ? `第 ${a} 段` : `第 ${a}–${b} 段`;
+}
+
+/** Runs a fix on the selected paragraphs instead of the highlighted ones. */
+function SelectionFix({ selection, onFix }: { selection: FixSelection; onFix: () => void }) {
+  const preview = selection.text.length > 40 ? `${selection.text.slice(0, 40)}…` : selection.text;
+  return (
+    <button
+      type="button"
+      className="btn sm"
+      title={`审稿人的标注没选全时，按你在正文中选中的范围修改：\n${preview}`}
+      onClick={onFix}
+    >
+      <TextSelect size={13} /> 按选区修复（{rangeLabel(selection)}）
+    </button>
+  );
 }
 
 const STAGES: FixStage[] = ["context", "retrieve", "generate", "judge"];
@@ -45,7 +67,7 @@ function FixProgressLine({ stage }: { stage: FixStage | null }) {
   );
 }
 
-export const CommentCard = memo(function CommentCard({ comment: c, replies, active, author, nameOf, fix, actions }: Props) {
+export const CommentCard = memo(function CommentCard({ comment: c, replies, active, author, nameOf, fix, selection, actions }: Props) {
   const reviewer = author?.reviewer ?? null;
   const shown = reviewer?.name ?? c.author;
 
@@ -58,7 +80,7 @@ export const CommentCard = memo(function CommentCard({ comment: c, replies, acti
         busy={!!fix.busy}
         error={fix.error}
         onApply={(edited, force) => void actions.apply(c.id, fix.proposal, edited, force)}
-        onRegenerate={() => actions.fix(c.id)}
+        onRegenerate={() => actions.fix(c.id, selection ?? undefined)}
         onReject={() => actions.reject(c.id, fix.proposal)}
         onOpenCitation={actions.openCitation}
       />
@@ -76,14 +98,20 @@ export const CommentCard = memo(function CommentCard({ comment: c, replies, acti
         <button type="button" className="btn sm" onClick={() => actions.fix(c.id)}>
           <RotateCw size={12} /> 重试
         </button>
+        {selection && <SelectionFix selection={selection} onFix={() => actions.fix(c.id, selection)} />}
       </div>
     );
   else if (!c.done)
     fixArea = (
       <div className="card-actions" onClick={stop}>
-        <button type="button" className="btn sm ai" onClick={() => actions.fix(c.id)}>
+        <button type="button" className="btn sm ai" onClick={() => actions.fix(c.id, null)}>
           <Sparkles size={13} /> AI 修复
         </button>
+        {selection ? (
+          <SelectionFix selection={selection} onFix={() => actions.fix(c.id, selection)} />
+        ) : (
+          active && <span className="card-hint">标注没选全？先在正文中选中要改的文字</span>
+        )}
       </div>
     );
 

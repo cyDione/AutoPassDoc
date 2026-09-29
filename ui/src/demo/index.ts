@@ -6,6 +6,7 @@ import type {
   CommentView,
   FixProgress,
   FixProposal,
+  FixSelection,
   FixStage,
   KbDocument,
   KbHit,
@@ -188,7 +189,7 @@ export function createDemoBackend(): Backend {
   const emitFix = (p: FixProgress) => fixListeners.forEach((h) => h(p));
   const emitKb = (p: KbProgress) => kbListeners.forEach((h) => h(p));
 
-  async function runFix(docId: number, commentId: string): Promise<FixProposal> {
+  async function runFix(docId: number, commentId: string, selection?: FixSelection | null): Promise<FixProposal> {
     const stage = (s: FixStage) => emitFix({ docId, commentId, stage: s });
     const started = performance.now();
     try {
@@ -205,7 +206,15 @@ export function createDemoBackend(): Backend {
       }
       stage("generate");
       await delay(1200);
-      const paragraph = doc.paragraph(comment.paragraphIndex);
+      const first = selection ? Math.min(selection.startParagraph, selection.endParagraph) : comment.paragraphIndex;
+      const last = selection ? Math.max(selection.startParagraph, selection.endParagraph) : comment.paragraphIndex;
+      if (last - first + 1 > 12) throw new Error(`选中了 ${last - first + 1} 段，一次最多修改 12 段，请缩小选区`);
+      const extra = [];
+      for (let i = first + 1; i <= last; i++) {
+        const p = doc.paragraph(i);
+        if (p) extra.push(p);
+      }
+      const paragraph = doc.paragraph(first);
       if (!paragraph) throw new Error("找不到批注所在的段落");
       const original = paragraphText(paragraph);
       const attempt = attempts.get(`${docId}:${commentId}`) ?? 0;
@@ -219,7 +228,15 @@ export function createDemoBackend(): Backend {
         docId,
         commentId,
         reviewer: reviewer?.name ?? null,
-        paragraphs: [{ index: paragraph.index, old: original, new: draft.text, diff: diffChars(original, draft.text) }],
+        paragraphs: [
+          { index: paragraph.index, old: original, new: draft.text, diff: diffChars(original, draft.text) },
+          // Extra selected paragraphs: only the wording fix.
+          ...extra.map((p) => {
+            const old = paragraphText(p);
+            const text = old.replace(/进一步/g, "持续");
+            return { index: p.index, old, new: text, diff: diffChars(old, text) };
+          }),
+        ],
         explanation: draft.explanation,
         citations: draft.citations,
         judge: draft.judge,

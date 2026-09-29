@@ -144,6 +144,13 @@ export interface Judgement {
   model: string;
 }
 
+/** Paragraphs the user selected by hand for an AI fix, when the reviewer's highlight missed some. */
+export interface FixSelection {
+  startParagraph: number;
+  endParagraph: number;
+  text: string;
+}
+
 export interface FixProposal {
   id: string;
   docId: number;

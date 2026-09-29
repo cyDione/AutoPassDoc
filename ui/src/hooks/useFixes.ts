@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Backend } from "../api";
-import type { FixProposal, FixStage } from "../types";
+import type { FixProposal, FixSelection, FixStage } from "../types";
 import { errorMessage } from "../util";
 import type { Notify, RunEdit } from "./useDocumentSession";
 
@@ -25,7 +25,11 @@ function withEntry(map: FixEntries, id: string, entry: FixEntry | null): FixEntr
 }
 
 export interface FixActions {
-  fix: (commentId: string) => void;
+  /**
+   * Runs a fix. `selection` rewrites those paragraphs instead of the ones under
+   * the highlight; left out, a regenerate reuses the comment's last selection.
+   */
+  fix: (commentId: string, selection?: FixSelection | null) => void;
   apply: (commentId: string, proposal: FixProposal, edited: string[] | null, force: boolean) => Promise<boolean>;
   reject: (commentId: string, proposal: FixProposal) => void;
 }
@@ -37,6 +41,7 @@ export function useFixes(backend: Backend, docId: number, edit: RunEdit, notify:
   const [applyingAll, setApplyingAll] = useState<{ done: number; total: number } | null>(null);
   const entriesRef = useRef(entries);
   const timers = useRef(new Set<number>());
+  const selections = useRef(new Map<string, FixSelection>());
 
   useEffect(() => {
     entriesRef.current = entries;
@@ -72,10 +77,12 @@ export function useFixes(backend: Backend, docId: number, edit: RunEdit, notify:
   );
 
   const fix = useCallback(
-    async (commentId: string) => {
+    async (commentId: string, selection?: FixSelection | null) => {
+      if (selection) selections.current.set(commentId, selection);
+      else if (selection === null) selections.current.delete(commentId);
       setEntries((prev) => withEntry(prev, commentId, { kind: "running", stage: null }));
       try {
-        ready(commentId, await backend.fixComment(docId, commentId));
+        ready(commentId, await backend.fixComment(docId, commentId, selections.current.get(commentId) ?? null));
       } catch (e) {
         setEntries((prev) => withEntry(prev, commentId, { kind: "failed", error: errorMessage(e) }));
       }

@@ -3,7 +3,7 @@ import { AlertCircle, MessageSquareText, Sparkles, X } from "lucide-react";
 import type { Backend } from "../api";
 import type { Notify, RunEdit } from "../hooks/useDocumentSession";
 import { useFixes } from "../hooks/useFixes";
-import type { AuthorView, CommentView } from "../types";
+import type { AuthorView, CommentView, FixSelection } from "../types";
 import { avatarColor, avatarText, errorMessage } from "../util";
 import { AuthorPopover } from "./AuthorPopover";
 import { CommentCard, type CardActions } from "./CommentCard";
@@ -20,6 +20,8 @@ interface Props {
   comments: CommentView[];
   authors: AuthorView[];
   activeId: string | null;
+  /** Text selected in the document, offered to the active comment's fix. */
+  selection: FixSelection | null;
   /** No chat model is configured, so fixes cannot run. */
   needsModel: boolean;
   onSelect: (comment: CommentView) => void;
@@ -35,6 +37,7 @@ export const CommentsPanel = memo(function CommentsPanel({
   comments,
   authors,
   activeId,
+  selection,
   needsModel,
   onSelect,
   edit,
@@ -246,6 +249,7 @@ export const CommentsPanel = memo(function CommentsPanel({
             comment={t}
             replies={replies.get(t.id)}
             active={t.id === activeId}
+            selection={t.id === activeId ? selection : null}
             author={authorsByName.get(t.author)}
             nameOf={nameOf}
             fix={entries.get(t.id)}

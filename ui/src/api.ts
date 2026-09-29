@@ -6,6 +6,7 @@ import type {
   EditOutcome,
   FixProgress,
   FixProposal,
+  FixSelection,
   KbDocument,
   KbHit,
   KbImportReport,
@@ -53,7 +54,8 @@ export interface Backend {
 
   // AI fixes
   /** Runs one fix; progress also arrives through onFixProgress. */
-  fixComment(docId: number, commentId: string): Promise<FixProposal>;
+  /** `selection` replaces the paragraphs under the comment's highlight. */
+  fixComment(docId: number, commentId: string, selection?: FixSelection | null): Promise<FixProposal>;
   /** Starts fixes for several comments; each result arrives through onFixProgress. */
   fixBatch(docId: number, commentIds: string[]): Promise<void>;
   onFixProgress(handler: (p: FixProgress) => void): Unsubscribe;
@@ -200,7 +202,7 @@ async function tauriBackend(): Promise<Backend> {
     save: (docId) => invoke("save_document", { docId }),
     setCommentDone: (docId, commentId, done) => invoke("set_comment_done", { docId, commentId, done }),
 
-    fixComment: (docId, commentId) => invoke("fix_comment", { docId, commentId }),
+    fixComment: (docId, commentId, selection) => invoke("fix_comment", { docId, commentId, selection: selection ?? null }),
     fixBatch: (docId, commentIds) => invoke("fix_batch", { docId, commentIds }),
     onFixProgress: (handler) => subscribe<FixProgress>("fix-progress", handler),
     applyFix: (docId, proposalId, edited, force) => invoke("apply_fix", { docId, proposalId, edited, force }),
