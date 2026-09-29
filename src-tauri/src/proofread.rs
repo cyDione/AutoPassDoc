@@ -1,5 +1,6 @@
 //! Document proofreading (文档校对).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -25,6 +26,15 @@ struct Progress {
     progress: ProofProgress,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProofResult {
+    #[serde(flatten)]
+    report: ProofReport,
+    /// Text of each paragraph with an issue, as it was checked.
+    paragraphs: BTreeMap<usize, String>,
+}
+
 /// Proofreads the document, or paragraphs `range` (first and last index,
 /// inclusive), reporting each step as a `proofread-progress` event.
 #[tauri::command]
@@ -35,7 +45,7 @@ pub async fn proofread(
     app: AppHandle,
     docs: Docs<'_>,
     core: CoreState<'_>,
-) -> Res<ProofReport> {
+) -> Res<ProofResult> {
     let open = docs.get(doc_id)?;
     let input = {
         let doc = open.doc.read().unwrap();
@@ -58,17 +68,27 @@ pub async fn proofread(
         None
     };
     CANCEL.store(false, Ordering::SeqCst);
-    core.proofread(
-        &input,
-        &options,
-        lookup,
-        |progress| {
-            let _ = app.emit("proofread-progress", Progress { doc_id, progress });
-        },
-        &CANCEL,
-    )
-    .await
-    .map_err(err)
+    let report = core
+        .proofread(
+            &input,
+            &options,
+            lookup,
+            |progress| {
+                let _ = app.emit("proofread-progress", Progress { doc_id, progress });
+            },
+            &CANCEL,
+        )
+        .await
+        .map_err(err)?;
+    let wanted: std::collections::HashSet<usize> =
+        report.issues.iter().map(|i| i.paragraph).collect();
+    let paragraphs = input
+        .paragraphs
+        .into_iter()
+        .filter(|p| wanted.contains(&p.index))
+        .map(|p| (p.index, p.text))
+        .collect();
+    Ok(ProofResult { report, paragraphs })
 }
 
 /// Stops the running proofread before its next model request.

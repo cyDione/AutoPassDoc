@@ -525,3 +525,74 @@ export interface UpdateInfo {
   publishedAt: string | null;
   assets: { name: string; url: string; size: number }[];
 }
+
+// ---- Document proofreading (文档校对) ----
+
+export type ProofCategory = "typo" | "numbering" | "consistency" | "misattribution" | "format" | "citation";
+
+export interface ProjectFacts {
+  name: string | null;
+  province: string | null;
+  city: string | null;
+  district: string | null;
+  owner: string | null;
+  /** Other [label, value] pairs, e.g. 建设地点. */
+  others: [string, string][];
+}
+
+export interface ProofIssue {
+  id: string;
+  category: ProofCategory;
+  severity: "error" | "warning";
+  paragraph: number;
+  /** Char offsets into the paragraph's editable text; equal for a whole-paragraph issue. */
+  start: number;
+  end: number;
+  original: string;
+  /** "" deletes the span; null leaves it to the user. */
+  suggestion: string | null;
+  reason: string;
+  source: "rule" | "model";
+}
+
+export interface ProofCitation {
+  title: string;
+  kind: "law" | "standard" | "policy" | "unknown";
+  standardNo: string | null;
+  docNo: string | null;
+  paragraphs: number[];
+  /** null when it was not looked up. */
+  status: {
+    status: "current" | "repealed" | "superseded" | "unknown";
+    replacement: { title: string; number: string | null; url: string | null } | null;
+    reason: string;
+  } | null;
+}
+
+export interface ProofOptions {
+  categories: ProofCategory[];
+  useModel: boolean;
+  /** The project facts to check against; null extracts them from the document. */
+  facts: ProjectFacts | null;
+}
+
+export interface ProofReport {
+  facts: ProjectFacts;
+  issues: ProofIssue[];
+  citations: ProofCitation[];
+  counts: Partial<Record<ProofCategory, number>>;
+  sections: number;
+  cachedSections: number;
+  modelCalls: number;
+  failures: string[];
+  cancelled: boolean;
+  /** Text of each paragraph with an issue, as checked. */
+  paragraphs: Record<number, string>;
+}
+
+export interface ProofProgress {
+  docId: number;
+  stage: "rules" | "model" | "consistency" | "citations" | "done";
+  done: number;
+  total: number;
+}

@@ -13,6 +13,7 @@ import { usePanelWidth } from "./hooks/usePanelWidth";
 import { useCommentLayout } from "./hooks/useCommentLayout";
 import { useTheme } from "./hooks/useTheme";
 import { KnowledgeBasePage, type DroppedFiles } from "./pages/KnowledgeBasePage";
+import { ProofreadPage } from "./pages/ProofreadPage";
 import { ReviewersPage } from "./pages/ReviewersPage";
 import type { CommentView, FixSelection, OpenedDoc, OutlineItem, Settings } from "./types";
 import { errorMessage, isTyping } from "./util";
@@ -22,7 +23,7 @@ interface Toast {
   error?: boolean;
 }
 
-const PAGE_TITLE: Record<Page, string | null> = { doc: null, kb: "知识库", reviewers: "审稿人" };
+const PAGE_TITLE: Record<Page, string | null> = { doc: null, proofread: "文档校对", kb: "知识库", reviewers: "审稿人" };
 
 export default function App() {
   const [backend, setBackend] = useState<Backend | null>(null);
@@ -194,6 +195,7 @@ export default function App() {
     [docName],
   );
   const closeWebSearch = useCallback(() => setWebSearch(null), []);
+  const onSearchCitation = useCallback((need: string) => setWebSearch({ need, context: "", nonce: Date.now() }), []);
 
   const onOpen = useCallback(() => void openPicker(), [openPicker]);
   const collapseSidebar = useCallback(() => setSidebarOpen(false), []);
@@ -349,6 +351,21 @@ export default function App() {
               </div>
             )}
           </div>
+          {backend && visited.has("proofread") && (
+            <div className={`page-layer${page === "proofread" ? "" : " hidden"}`} inert={page !== "proofread"}>
+              <ProofreadPage
+                backend={backend}
+                doc={doc}
+                section={section}
+                settings={settings}
+                edit={edit}
+                onJump={jumpToParagraph}
+                onSearch={onSearchCitation}
+                onOpenSettings={openRoleSettings}
+                notify={notify}
+              />
+            </div>
+          )}
           {backend && visited.has("kb") && (
             <div className={`page-layer${page === "kb" ? "" : " hidden"}`} inert={page !== "kb"}>
               <KnowledgeBasePage backend={backend} active={page === "kb"} settings={settings} dropped={kbDrop} notify={notify} />

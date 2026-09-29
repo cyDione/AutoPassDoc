@@ -21,6 +21,7 @@ import type {
   ParserInfo,
   ParserKind,
   PreReviewItem,
+  ProofProgress,
   ProbeResult,
   Reviewer,
   ReviewerProfile,
@@ -31,6 +32,7 @@ import { PLACEHOLDER } from "../types";
 import { diffChars } from "./diff";
 import { DemoDocument, paragraphText, rewriteSpans, type DemoSource } from "./document";
 import { draftFix, seededRandom } from "./fixes";
+import { demoProofread } from "./proofread";
 import {
   GATEWAY_ID,
   KB_PASSAGES,
@@ -324,6 +326,8 @@ export function createDemoBackend(): Backend {
         ? FOLDER_FILES.filter((f) => enhanced() || !IMAGE_FORMATS.has(extension(f))).map((f) => `${DEMO_FOLDER}\\${f}`)
         : [p],
     );
+  const proofListeners = new Set<(p: ProofProgress) => void>();
+  let proofCancel = false;
   const backupListeners = new Set<(p: BackupProgress) => void>();
   const backupManifest = (): BackupManifest => ({
     format: 1,
@@ -862,6 +866,68 @@ export function createDemoBackend(): Backend {
     async openUrl(url) {
       window.open(url, "_blank", "noopener");
     },
+    async proofread(docId, options, range) {
+      const doc = getDoc(docId);
+      const count = doc.summary.paragraphCount;
+      const [first, last] = range ?? [0, count - 1];
+      const paragraphs: [number, string][] = [];
+      for (let i = Math.max(0, first); i <= Math.min(last, count - 1); i++) {
+        const p = doc.paragraph(i);
+        if (p) paragraphs.push([i, paragraphText(p)]);
+      }
+      proofCancel = false;
+      const emit = (stage: ProofProgress["stage"], done: number, total: number) => proofListeners.forEach((h) => h({ docId, stage, done, total }));
+      emit("rules", 0, 1);
+      await delay(300);
+      const sections = options.useModel ? Math.min(8, Math.ceil(paragraphs.length / 12)) : 0;
+      if (options.useModel && !settings.roles.chat.model) throw new Error("请先在设置 › 模型分配中选择大语言模型，或关闭“使用大语言模型”只做规则检查");
+      for (let i = 0; i < sections && !proofCancel; i++) {
+        emit("model", i, sections);
+        await delay(250);
+      }
+      if (options.categories.includes("citation")) {
+        emit("citations", 0, 2);
+        await delay(400);
+      }
+      emit("done", 1, 1);
+      const report = demoProofread(paragraphs, options);
+      return { ...report, cancelled: proofCancel };
+    },
+    async cancelProofread() {
+      proofCancel = true;
+    },
+    onProofreadProgress(handler) {
+      proofListeners.add(handler);
+      return () => proofListeners.delete(handler);
+    },
+    async applyProofIssues(docId, issues) {
+      const doc = getDoc(docId);
+      await delay(120);
+      const tracked = settings.fix.editMode === "tracked";
+      const byParagraph = new Map<number, typeof issues>();
+      for (const i of issues) if (i.suggestion !== null) byParagraph.set(i.paragraph, [...(byParagraph.get(i.paragraph) ?? []), i]);
+      const paragraphs = new Map<number, SpanView[]>();
+      const applied: string[] = [];
+      for (const [index, list] of byParagraph) {
+        const p = doc.paragraph(index);
+        if (!p) continue;
+        const current = paragraphText(p);
+        const chars = [...current];
+        let next = chars;
+        // Last first, so earlier offsets stay valid.
+        for (const i of [...list].sort((a, b) => b.start - a.start)) {
+          if (next.slice(i.start, i.end).join("") !== i.original) continue;
+          next = [...next.slice(0, i.start), ...(i.suggestion ?? ""), ...next.slice(i.end)];
+          applied.push(i.id);
+        }
+        const text = next.join("");
+        if (text !== current) paragraphs.set(index, rewriteSpans(p.spans, diffChars(current, text), tracked, settings.fix.author));
+      }
+      if (applied.length === 0) throw new Error("没有可以应用的修改：原文已变化，请重新校对");
+      return { outcome: doc.commit("文档校对", { paragraphs }), applied };
+    },
+    async clearProofreadCache() {},
+
     async parserInfos() {
       return (["mineru", "paddleocr"] as const).map((k) => ({ ...PARSER_INFO[k], hasKey: parserKeys.has(k) }));
     },

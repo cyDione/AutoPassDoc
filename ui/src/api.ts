@@ -28,6 +28,10 @@ import type {
   ParserKind,
   ParserTest,
   PreReviewItem,
+  ProofIssue,
+  ProofOptions,
+  ProofProgress,
+  ProofReport,
   ProbeResult,
   ProviderView,
   Reviewer,
@@ -144,6 +148,15 @@ export interface Backend {
   openPath(path: string): Promise<void>;
   /** Opens a web page in the default browser. */
   openUrl(url: string): Promise<void>;
+
+  // Proofreading
+  /** Proofreads the document, or paragraphs `range` (first and last, inclusive). */
+  proofread(docId: number, options: ProofOptions, range: [number, number] | null): Promise<ProofReport>;
+  cancelProofread(): Promise<void>;
+  onProofreadProgress(handler: (p: ProofProgress) => void): Unsubscribe;
+  /** Writes the issues' suggestions into the document as one undo step. */
+  applyProofIssues(docId: number, issues: ProofIssue[]): Promise<{ outcome: EditOutcome; applied: string[] }>;
+  clearProofreadCache(): Promise<void>;
 
   // Enhanced parsing (MinerU / PaddleOCR)
   parserInfos(): Promise<ParserInfo[]>;
@@ -318,6 +331,11 @@ async function tauriBackend(): Promise<Backend> {
     onKbProgress: (handler) => subscribe<KbProgress>("kb-progress", handler),
     openPath: (path) => opener.openPath(path),
     openUrl: (url) => opener.openUrl(url),
+    proofread: (docId, options, range) => invoke("proofread", { docId, options, range }),
+    cancelProofread: () => invoke("cancel_proofread"),
+    onProofreadProgress: (handler) => subscribe<ProofProgress>("proofread-progress", handler),
+    applyProofIssues: (docId, issues) => invoke("apply_proof_issues", { docId, issues }),
+    clearProofreadCache: () => invoke("clear_proofread_cache"),
     parserInfos: () => invoke("parser_infos"),
     setParserKey: (kind, key) => invoke("set_parser_key", { kind, key }),
     clearParserKey: (kind) => invoke("clear_parser_key", { kind }),

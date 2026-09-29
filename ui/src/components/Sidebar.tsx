@@ -1,12 +1,13 @@
 import { memo, useEffect, useRef } from "react";
-import { FileText, FolderOpen, Library, PanelLeftClose, Settings, Users } from "lucide-react";
+import { FileSearch, FileText, FolderOpen, Library, PanelLeftClose, Settings, Users } from "lucide-react";
 import type { OpenedDoc, OutlineItem } from "../types";
 import { formatChars } from "../util";
 
-export type Page = "doc" | "kb" | "reviewers";
+export type Page = "doc" | "proofread" | "kb" | "reviewers";
 
 const PAGES = [
   ["doc", FileText, "文档"],
+  ["proofread", FileSearch, "文档校对"],
   ["kb", Library, "知识库"],
   ["reviewers", Users, "审稿人"],
 ] as const;
