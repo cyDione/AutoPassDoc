@@ -234,19 +234,15 @@ pub fn detect_heading(line: &str) -> Option<Heading> {
         return heading(HeadingKind::Attachment, len, false);
     }
 
-    let (kind, label) = if let Some(m) = OUTLINE1.find(&norm) {
-        (HeadingKind::Outline1, m.as_str())
-    } else if let Some(m) = OUTLINE2.find(&norm) {
-        (HeadingKind::Outline2, m.as_str())
-    } else if let Some(m) = OUTLINE3.find(&norm) {
-        (HeadingKind::Outline3, m.as_str())
-    } else if let Some(m) = OUTLINE4.find(&norm) {
-        (HeadingKind::Outline4, m.as_str())
-    } else if let Some(m) = OUTLINE5.find(&norm) {
-        (HeadingKind::Outline5, m.as_str())
-    } else {
-        return None;
-    };
+    let (kind, label) = [
+        (HeadingKind::Outline1, &*OUTLINE1),
+        (HeadingKind::Outline2, &*OUTLINE2),
+        (HeadingKind::Outline3, &*OUTLINE3),
+        (HeadingKind::Outline4, &*OUTLINE4),
+        (HeadingKind::Outline5, &*OUTLINE5),
+    ]
+    .into_iter()
+    .find_map(|(kind, re)| re.find(&norm).map(|m| (kind, m.as_str())))?;
     let label = label.chars().count();
     // "1.5亿元" is a number, not a heading.
     if kind == HeadingKind::Outline3 && chars.get(label).is_some_and(char::is_ascii_digit) {

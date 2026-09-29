@@ -11,6 +11,8 @@ use crate::error::{Error, Result};
 
 pub struct SecretStore {
     file: PathBuf,
+    /// Use the system credential store when it is available.
+    native: bool,
     lock: Mutex<()>,
 }
 
@@ -18,12 +20,22 @@ impl SecretStore {
     pub fn new(data_dir: &std::path::Path) -> Self {
         Self {
             file: data_dir.join("secrets.json"),
+            native: true,
             lock: Mutex::new(()),
         }
     }
 
+    /// Keeps keys only in `secrets.json`, e.g. for tests, which must not
+    /// touch (or wait on) the user's keychain.
+    pub fn file_only(data_dir: &std::path::Path) -> Self {
+        Self {
+            native: false,
+            ..Self::new(data_dir)
+        }
+    }
+
     pub fn set(&self, name: &str, secret: &str) -> Result<()> {
-        if native::set(name, secret).is_ok() {
+        if self.native && native::set(name, secret).is_ok() {
             // A stale copy in the file would otherwise win after a store reset.
             return self.file_update(|m| {
                 m.remove(name);
@@ -35,14 +47,16 @@ impl SecretStore {
     }
 
     pub fn get(&self, name: &str) -> Result<Option<String>> {
-        if let Some(s) = native::get(name) {
+        if let Some(s) = self.native.then(|| native::get(name)).flatten() {
             return Ok(Some(s));
         }
         Ok(self.file_read()?.remove(name))
     }
 
     pub fn delete(&self, name: &str) -> Result<()> {
-        native::delete(name);
+        if self.native {
+            native::delete(name);
+        }
         self.file_update(|m| {
             m.remove(name);
         })
@@ -130,7 +144,7 @@ mod tests {
     #[test]
     fn stores_reads_and_deletes() {
         let dir = tempfile::tempdir().unwrap();
-        let store = SecretStore::new(dir.path());
+        let store = SecretStore::file_only(dir.path());
         assert_eq!(store.get("provider:1").unwrap(), None);
         store.set("provider:1", "sk-test").unwrap();
         assert_eq!(store.get("provider:1").unwrap().as_deref(), Some("sk-test"));

@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use app_core::fix::{FixJob, Stage, context};
+use app_core::secrets::SecretStore;
 use app_core::settings::RoleModel;
 use app_core::store::{CaseAction, ProviderRecord};
 use app_core::{Core, providers};
@@ -20,7 +21,7 @@ fn core(dir: &std::path::Path, server: &MockServer) -> Core {
         ..ClientConfig::default()
     })
     .unwrap();
-    let core = Core::with_client(dir, client).unwrap();
+    let core = Core::with_parts(dir, client, SecretStore::file_only(dir)).unwrap();
     {
         let store = core.store();
         store

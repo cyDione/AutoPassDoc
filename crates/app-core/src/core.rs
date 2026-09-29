@@ -61,15 +61,16 @@ impl Core {
     pub fn open(data_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(data_dir)?;
         let client = Client::new().map_err(|e| Error::Setup(e.to_string()))?;
-        Self::with_client(data_dir, client)
+        Self::with_parts(data_dir, client, SecretStore::new(data_dir))
     }
 
-    pub fn with_client(data_dir: &Path, client: Client) -> Result<Self> {
+    /// A core with its own model client and key storage, e.g. for tests.
+    pub fn with_parts(data_dir: &Path, client: Client, secrets: SecretStore) -> Result<Self> {
         std::fs::create_dir_all(data_dir)?;
         Ok(Self {
             data_dir: data_dir.to_path_buf(),
             store: Mutex::new(Store::open(&data_dir.join("app.db"))?),
-            secrets: SecretStore::new(data_dir),
+            secrets,
             client,
             proposals: Mutex::new(HashMap::new()),
             kb: Mutex::new(None),
