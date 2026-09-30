@@ -658,3 +658,59 @@ async fn web_search_parameters_and_sources() {
     );
     assert_eq!(detect(ProviderKind::Ollama, ""), None);
 }
+
+#[tokio::test]
+async fn gateway_empty_content_500_retries_with_more_tokens_and_thinking_off() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(json!({ "reasoning_effort": "none" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body("好")))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+            "error": { "message": "empty response content", "type": "upstream_error" }
+        })))
+        .mount(&server)
+        .await;
+    let p = provider(ProviderKind::OpenAiCompatible, &server);
+    let mut req = request("deepseek-v4.1-flash", Some(ThinkingLevel::Off));
+    req.max_tokens = Some(2048);
+    let r = client().chat(&p, &req).await.unwrap();
+    assert_eq!(r.content, "好");
+    let sent = bodies(&server).await;
+    // The empty-content 500 is not retried as a plain 5xx.
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0]["thinking"], json!({ "type": "disabled" }));
+    assert!(sent[0].get("reasoning_effort").is_none());
+    assert_eq!(sent[1]["thinking"], json!({ "type": "disabled" }));
+    assert_eq!(sent[1]["reasoning"], json!({ "enabled": false }));
+    assert_eq!(sent[1]["max_tokens"], json!(req.profile.max_output_tokens.max(4096)));
+}
+
+#[tokio::test]
+async fn reasoning_only_answer_retries_then_explains() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{
+                "message": { "role": "assistant", "content": "", "reasoning_content": "想了很久" },
+                "finish_reason": "length"
+            }]
+        })))
+        .mount(&server)
+        .await;
+    let p = provider(ProviderKind::OpenAiCompatible, &server);
+    let err = client()
+        .chat(&p, &request("deepseek-chat", None))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("思考"), "{err}");
+    let sent = bodies(&server).await;
+    assert_eq!(sent.len(), 2);
+    // Thinking was not asked off, so no off switches are added.
+    assert!(sent[1].get("reasoning_effort").is_none());
+}

@@ -193,24 +193,71 @@ struct BodyOptions {
     optional: bool,
     /// Send `max_completion_tokens` instead of `max_tokens`.
     max_completion_tokens: bool,
+    /// With thinking off, also send the other common off switches
+    /// (`reasoning_effort: "none"`, `reasoning: {enabled: false}`), for
+    /// gateways that ignore the model's own one.
+    force_off: bool,
 }
 
 const FULL: BodyOptions = BodyOptions {
     optional: true,
     max_completion_tokens: false,
+    force_off: false,
 };
+
+/// Shown when the model spent its whole output on reasoning, even after a retry.
+const STARVED: &str = "模型没有给出正文：输出额度全部用在了思考（推理）上。\
+已自动加大输出额度并尝试关闭思考后重试，仍未成功。\
+可在设置中把该模型的思考级别调低或关闭，或换用不带思考的模型";
 
 impl Client {
     /// Sends a chat request. If the server rejects it with 400/422 and the
     /// error points at an optional parameter (thinking, `response_format`,
     /// temperature, unknown parameter...), retries once without them.
+    ///
+    /// If the answer is empty because reasoning used up the output limit
+    /// (an empty `content`, or a gateway's "empty response content" 5xx),
+    /// retries once with the profile's full output limit and, when thinking
+    /// is off, every common off switch.
     pub async fn chat(&self, p: &Provider, req: &ChatRequest) -> Result<ChatResponse> {
+        let first = self.chat_with(p, req, FULL).await;
+        let starved = match &first {
+            Ok(r) => is_starved(r),
+            Err(e) => is_empty_output_error(e),
+        };
+        if !starved {
+            return first;
+        }
+        let mut retry = req.clone();
+        retry.max_tokens = Some(
+            req.profile
+                .max_output_tokens
+                .max(req.max_tokens.unwrap_or(0).saturating_mul(2)),
+        );
+        let opts = BodyOptions {
+            force_off: req.thinking == Some(ThinkingLevel::Off),
+            ..FULL
+        };
+        match self.chat_with(p, &retry, opts).await {
+            Ok(r) if !is_starved(&r) => Ok(r),
+            Ok(_) => Err(Error::Decode(format!("{STARVED}。"))),
+            Err(e) if is_empty_output_error(&e) => Err(Error::Decode(format!("{STARVED}。"))),
+            Err(e) => Err(Error::Decode(format!("{STARVED}。重试时出错：{e}"))),
+        }
+    }
+
+    async fn chat_with(
+        &self,
+        p: &Provider,
+        req: &ChatRequest,
+        full: BodyOptions,
+    ) -> Result<ChatResponse> {
         let url = match p.kind {
             ProviderKind::Anthropic => p.url("v1/messages")?,
             _ => p.openai_url("chat/completions")?,
         };
         let endpoint = endpoint_label("POST", &url);
-        let body = chat_body(p.kind, req, FULL);
+        let body = chat_body(p.kind, req, full);
         let failure = match self.post_json_raw(p, &url, &body).await {
             Ok(v) => return parse_response(p.kind, &endpoint, &v),
             Err(f) => f,
@@ -226,6 +273,7 @@ impl Client {
                 let opts = BodyOptions {
                     optional: false,
                     max_completion_tokens: err.contains("max_completion_tokens"),
+                    force_off: false,
                 };
                 let reduced = chat_body(p.kind, req, opts);
                 if reduced != body {
@@ -236,6 +284,19 @@ impl Client {
         }
         Err(failure.into())
     }
+}
+
+/// Empty answer with reasoning, or cut off before any answer.
+fn is_starved(r: &ChatResponse) -> bool {
+    r.content.trim().is_empty()
+        && (r.reasoning.is_some() || r.finish_reason.as_deref() == Some("length"))
+}
+
+/// A gateway's 5xx for an upstream answer without content (gpt-load says
+/// "empty response content").
+fn is_empty_output_error(e: &Error) -> bool {
+    matches!(e, Error::Http { status: 500..=599, message }
+        if message.to_lowercase().contains("empty response"))
 }
 
 /// Lowercased fragments of error bodies that suggest an optional parameter was rejected.
@@ -327,6 +388,11 @@ fn chat_body(kind: ProviderKind, req: &ChatRequest, opts: BodyOptions) -> Value 
     }
     if let Some(level) = level {
         insert_thinking(&mut obj, kind, req, level);
+    }
+    if opts.force_off && opts.optional && req.thinking == Some(ThinkingLevel::Off) {
+        obj.entry("reasoning_effort").or_insert("none".into());
+        obj.entry("reasoning")
+            .or_insert(json!({ "enabled": false }));
     }
     match req.web_search {
         Some(WebSearch::OpenRouter) => {
