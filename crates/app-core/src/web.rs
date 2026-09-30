@@ -25,6 +25,7 @@ const MAX_DOWNLOAD_BYTES: usize = 100 << 20;
 /// Result pages scanned for attachment links.
 const PAGES_TO_SCAN: usize = 3;
 const MAX_RESULTS: usize = 8;
+const SHANGHAI_GWK: &str = "https://www.shanghai.gov.cn";
 /// Results from sites off the whitelist, listed after the whitelisted ones.
 const MAX_OTHER_RESULTS: usize = 6;
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 AutoPassDoc";
@@ -185,6 +186,8 @@ pub struct WebState {
     robots: Mutex<HashMap<String, Vec<String>>>,
     /// Search engine addresses; tests point them at a mock server.
     bases: Mutex<(String, String)>,
+    /// Shanghai government's document library (主动公开公文库); tests point it elsewhere.
+    shanghai_gwk: Mutex<String>,
 }
 
 impl WebState {
@@ -204,6 +207,7 @@ impl WebState {
             seen: Mutex::default(),
             robots: Mutex::default(),
             bases: Mutex::new(("https://cn.bing.com".into(), "https://www.baidu.com".into())),
+            shanghai_gwk: Mutex::new(SHANGHAI_GWK.into()),
         })
     }
 }
@@ -384,15 +388,70 @@ pub fn parse_baidu(html: &str) -> Vec<(String, String, String)> {
 /// Attachment links on a page: (absolute url, link text).
 pub fn attachments(page: &Url, html: &str) -> Vec<(Url, String)> {
     static A: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?is)<a\s[^>]*href\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a>"#).unwrap()
+        Regex::new(r#"(?is)<a\s([^>]*?)href\s*=\s*["']([^"']+)["']([^>]*)>(.*?)</a>"#).unwrap()
     });
+    static TITLE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"(?i)\btitle\s*=\s*["']([^"']+)["']"#).unwrap());
     let mut seen = HashSet::new();
     A.captures_iter(html)
         .filter_map(|c| {
-            let url = page.join(decode_entities(&c[1]).trim()).ok()?;
+            let url = page.join(decode_entities(&c[2]).trim()).ok()?;
             file_type(&url)?;
-            seen.insert(url.to_string())
-                .then(|| (url, clean_text(&c[2])))
+            // Icon links carry their name only in `title`.
+            let mut text = clean_text(&c[4]);
+            if text.is_empty() {
+                let attrs = format!("{} {}", &c[1], &c[3]);
+                text = TITLE
+                    .captures(&attrs)
+                    .map(|t| clean_text(&t[1]))
+                    .unwrap_or_default();
+            }
+            seen.insert(url.to_string()).then_some((url, text))
+        })
+        .collect()
+}
+
+/// Results from the Shanghai document library's search API. The snippet
+/// leads with the document number, which is often what a gap asks for.
+pub fn parse_shanghai_gwk(base: &Url, data: &Value) -> Vec<WebResult> {
+    let list = data
+        .pointer("/page/list")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    list.iter()
+        .filter_map(|item| {
+            let text = |k: &str| {
+                item.get(k)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+            };
+            let id = text("id");
+            if id.is_empty() || text("title").is_empty() {
+                return None;
+            }
+            let url = base.join(&format!("/gwk/search/content/{id}")).ok()?;
+            let number = match (
+                text("document_agency"),
+                text("document_publish_year"),
+                text("document_num"),
+            ) {
+                (agency, year, num) if !agency.is_empty() && !num.is_empty() => {
+                    format!("{agency}〔{year}〕{num}号")
+                }
+                _ => String::new(),
+            };
+            let date = text("display_date").get(..10).unwrap_or_default();
+            let body: String = clean_text(text("txt")).chars().take(120).collect();
+            let head = [number.as_str(), text("agency"), date]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let mut r = result(text("title"), url, &format!("{head}　{body}"));
+            r.trusted = true;
+            Some(r)
         })
         .collect()
 }
@@ -460,6 +519,12 @@ impl Core {
     /// Web settings saved by the user.
     fn web_settings(&self) -> Result<WebSettings> {
         Ok(self.settings()?.web)
+    }
+
+    /// Points the Shanghai document library search somewhere else (tests).
+    #[doc(hidden)]
+    pub fn set_site_search_base(&self, shanghai_gwk: &str) {
+        *self.web.shanghai_gwk.lock().unwrap() = shanghai_gwk.trim_end_matches('/').into();
     }
 
     /// Points the search engines somewhere else (tests).
@@ -787,6 +852,7 @@ impl Core {
             SearchEngine::Baidu => [SearchEngine::Baidu, SearchEngine::Bing],
         };
         let mut failed: HashSet<SearchEngine> = HashSet::new();
+        let mut failed_sites = false;
         let mut results: Vec<WebResult> = Vec::new();
         let mut others: Vec<WebResult> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -800,6 +866,23 @@ impl Core {
                 format!("{query} {site_filter}")
             };
             let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+            // Sites' own search finds their documents even when the engines
+            // have not indexed them or refuse this machine.
+            if !failed_sites && allowed("www.shanghai.gov.cn", whitelist) {
+                match self.search_shanghai_gwk(query).await {
+                    Ok(found) => {
+                        for r in found {
+                            if seen.insert(r.url.clone()) {
+                                results.push(r);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        notes.push(format!("上海市政府公文库：{e}"));
+                        failed_sites = true;
+                    }
+                }
+            }
             let before = results.len() + others.len();
             for engine in engines {
                 if failed.contains(&engine) {
@@ -899,6 +982,15 @@ impl Core {
                 } else {
                     text
                 };
+                // A bare file name says less than the page it came from.
+                let ext = file_type(&file).unwrap_or_default();
+                let title = if !parent.is_empty()
+                    && title.to_ascii_lowercase().ends_with(&format!(".{ext}"))
+                {
+                    format!("{parent}（附件 {title}）")
+                } else {
+                    title
+                };
                 let mut r = result(&title, file, &format!("附件，来自：{parent}"));
                 r.trusted = true;
                 results.push(r);
@@ -906,6 +998,38 @@ impl Core {
         }
         results.extend(others);
         Ok(results)
+    }
+
+    /// Searches the Shanghai government's document library (主动公开公文库),
+    /// which covers the city's and districts' published documents with their
+    /// document numbers.
+    async fn search_shanghai_gwk(&self, query: &str) -> Result<Vec<WebResult>> {
+        let base = self.web.shanghai_gwk.lock().unwrap().clone();
+        let url = Url::parse(&format!("{base}/gwk/search/data"))
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        let fail = |e: String| Error::Invalid(format!("无法访问：{e}"));
+        let body = serde_json::json!({
+            "pageNo": 1, "pageSize": MAX_RESULTS, "keyword": query,
+            "unitType": "", "publishDate": "", "indexNo": "", "documentAgency": "",
+            "documentPublishYear": "", "documentNum": "", "theme": ""
+        });
+        let response = self
+            .web
+            .http
+            .post(url.clone())
+            .header(reqwest::header::REFERER, format!("{base}/gwk/search/index"))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| fail(e.without_url().to_string()))?;
+        if !response.status().is_success() {
+            return Err(fail(format!("HTTP {}", response.status().as_u16())));
+        }
+        let data: Value = response
+            .json()
+            .await
+            .map_err(|e| fail(e.without_url().to_string()))?;
+        Ok(parse_shanghai_gwk(&url, &data))
     }
 
     /// One results page from `engine`: the page address and its
@@ -1268,6 +1392,42 @@ mod tests {
         assert!(mentions("上海市“十五五”生态环境保护规划", &terms));
         assert!(mentions("美丽上海建设三年行动计划", &terms));
         assert!(!mentions("job opportunities - beijing", &terms));
+    }
+
+    #[test]
+    fn reads_the_shanghai_document_library() {
+        // Shape of https://www.shanghai.gov.cn/gwk/search/data, 2026-09.
+        let data = serde_json::json!({"code": 0, "page": {"count": 1, "list": [{
+            "id": "5c1780a7432543a389d9fe119d1e00b1",
+            "title": "上海市人民政府关于印发《美丽上海建设“十五五”规划》的通知",
+            "txt": "各区人民政府，市政府各委、办、局，各有关单位： \n\u{2003}\u{2003}现将《美丽上海建设“十五五”规划》印发给你们",
+            "agency": "上海市人民政府", "document_agency": "沪府发",
+            "document_publish_year": "2026", "document_num": "16",
+            "display_date": "2026-09-10 14:00:07"
+        }]}});
+        let base = Url::parse("https://www.shanghai.gov.cn/gwk/search/data").unwrap();
+        let found = parse_shanghai_gwk(&base, &data);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].url,
+            "https://www.shanghai.gov.cn/gwk/search/content/5c1780a7432543a389d9fe119d1e00b1"
+        );
+        assert!(found[0].trusted);
+        assert!(
+            found[0]
+                .snippet
+                .starts_with("沪府发〔2026〕16号 · 上海市人民政府 · 2026-09-10"),
+            "{}",
+            found[0].snippet
+        );
+
+        // The page links its PDF with an icon and the name in `title`.
+        let page = Url::parse(&found[0].url).unwrap();
+        let links = attachments(
+            &page,
+            r#"<a class="download0301" href="/cmsres/70/x.pdf" title="hff2616b.pdf" target="_blank"><i></i></a>"#,
+        );
+        assert_eq!(links[0].1, "hff2616b.pdf");
     }
 
     #[test]
