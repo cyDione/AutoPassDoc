@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Download, ExternalLink, FileText, Globe, Search, X } from "lucide-react";
+import { Copy, Download, ExternalLink, FileText, Globe, Search, Sparkles, X } from "lucide-react";
 import type { Backend } from "../api";
 import type { Notify } from "../hooks/useDocumentSession";
 import type { WebResult, WebSearchOutcome } from "../types";
@@ -109,6 +109,14 @@ export function WebSearchDialog({ backend, request, onClose, notify }: Props) {
     ["白名单网站", results.filter((r) => r.trusted)],
     ["其他网站（请核实来源）", results.filter((r) => !r.trusted)],
   ];
+  const copy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      notify("已复制，粘贴到修改里替换“【待补充…】”后再应用");
+    } catch (e) {
+      notify(`无法复制：${errorMessage(e)}`, true);
+    }
+  };
   const open = (url: string) => void backend.openUrl(url).catch((e) => notify(`无法打开链接：${errorMessage(e)}`, true));
 
   return (
@@ -151,6 +159,23 @@ export function WebSearchDialog({ backend, request, onClose, notify }: Props) {
                 {outcome.queries.length > 1 && `，搜索词：${outcome.queries.join("｜")}`}
                 {outcome.notes.length > 0 && `（${outcome.notes.join("；")}）`}
               </div>
+              {outcome.answer && (
+                <div className="web-answer">
+                  <div className="head">
+                    <Sparkles size={13} /> AI 从网页原文中找到
+                  </div>
+                  <div className="text">{outcome.answer.text}</div>
+                  <div className="quote">原文：“{outcome.answer.quote}”</div>
+                  <div className="row">
+                    <button type="button" className="btn sm primary" onClick={() => void copy(outcome.answer!.text)}>
+                      <Copy size={12} /> 复制
+                    </button>
+                    <button type="button" className="link-btn" title={outcome.answer.url} onClick={() => open(outcome.answer!.url)}>
+                      出处：{outcome.answer.title} <ExternalLink size={11} />
+                    </button>
+                  </div>
+                </div>
+              )}
               {outcome.results.length === 0 && <div className="panel-empty">没有找到结果，换个说法再试试</div>}
               {groups.map(
                 ([label, rows]) =>

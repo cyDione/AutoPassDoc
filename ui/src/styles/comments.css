@@ -706,6 +706,44 @@
   color: var(--text);
 }
 
+.web-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.web-answer .head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.web-answer .text {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.web-answer .quote {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+.web-answer .row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
 .web-group {
   display: flex;
   flex-direction: column;

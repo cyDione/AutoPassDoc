@@ -17,6 +17,7 @@ use serde_json::Value;
 use crate::core::{Core, RoleName};
 use crate::error::{Error, Result};
 use crate::knowledge::ImportResult;
+use crate::search_api::SearchService;
 
 /// Largest page read when looking for attachments.
 const MAX_PAGE_BYTES: usize = 2 << 20;
@@ -77,6 +78,8 @@ pub struct WebSettings {
     pub engine: SearchEngine,
     /// Hosts the local search may return and fetch, matched as domain suffixes.
     pub whitelist: Vec<String>,
+    /// A keyed search API, tried before scraping the search engines.
+    pub service: SearchService,
 }
 
 impl Default for WebSettings {
@@ -86,6 +89,7 @@ impl Default for WebSettings {
             model_search: None,
             engine: SearchEngine::Bing,
             whitelist: DEFAULT_WHITELIST.iter().map(|s| s.to_string()).collect(),
+            service: SearchService::None,
         }
     }
 }
@@ -162,6 +166,20 @@ pub struct SearchOutcome {
     pub notes: Vec<String>,
     /// The search terms used, first the one shown in the search box.
     pub queries: Vec<String>,
+    /// What to write in place of the gap, read from the pages found.
+    pub answer: Option<WebAnswer>,
+}
+
+/// Text for a "【待补充…】" gap that the chat model read off a whitelisted
+/// page, with the sentence that supports it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebAnswer {
+    pub text: String,
+    /// The supporting sentence, found verbatim in the page.
+    pub quote: String,
+    pub title: String,
+    pub url: String,
 }
 
 /// What to look up: typed terms, or a "【待补充…】" need with the text
@@ -261,6 +279,24 @@ fn http_url(s: &str) -> Option<Url> {
 
 static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<[^>]*>").unwrap());
 static SPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+
+/// The readable text of a page: scripts, styles and markup removed.
+pub fn page_text(html: &str) -> String {
+    static NOISE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?is)<(script|style|noscript|svg|head)\b.*?</(script|style|noscript|svg|head)>",
+        )
+        .unwrap()
+    });
+    clean_text(&NOISE.replace_all(html, " "))
+}
+
+/// Squeezes out whitespace and quote styles so a quote can be found in a page.
+fn squeeze(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_whitespace() && !matches!(c, '“' | '”' | '"' | '«' | '»' | '《' | '》'))
+        .collect()
+}
 
 /// Strips tags, decodes entities and collapses whitespace.
 pub fn clean_text(html: &str) -> String {
@@ -494,6 +530,16 @@ const TERMS_PROMPT: &str = "你帮助撰写政府项目报告的人查资料。�
 
 只输出 JSON：{\"queries\": [\"关键词1\", \"关键词2\"]}";
 
+const ANSWER_PROMPT: &str = "你帮助撰写政府项目报告的人补全资料。报告里有一处“待补充”，下面给出它要补充什么、所在原文，以及几份编号的网页原文。请根据网页原文写出可以直接替换“【待补充…】”的文字，与所在原文语气衔接，简洁准确。
+
+只使用网页原文里明确写出的信息，不要推测或编造；文件名称、文号、日期要与原文一字不差。网页原文里找不到就把 answer 留空。
+
+只输出 JSON：{\"answer\": \"替换文字\", \"source\": 网页编号, \"quote\": \"网页原文中支持答案的一句话，原样摘录\"}";
+
+/// Pages read when drafting an answer, and how much of each.
+const PAGES_TO_READ: usize = 3;
+const PAGE_CHARS: usize = 5000;
+
 const SCREEN_PROMPT: &str = "你帮助撰写政府项目报告的人筛选搜索结果。给出报告里要补充的资料和一组编号的搜索结果，请挑出可能包含所需资料的结果，按相关程度从高到低排列，并用一句话说明各自能提供什么。与所需资料无关的结果不要列出。
 
 只输出 JSON：{\"keep\": [{\"i\": 编号, \"reason\": \"能提供什么\"}]}";
@@ -600,6 +646,7 @@ impl Core {
                         via: "model",
                         notes,
                         queries,
+                        answer: None,
                     });
                 }
                 Ok(_) => notes.push("大语言模型联网搜索没有找到结果".into()),
@@ -611,6 +658,7 @@ impl Core {
                     via: "model",
                     notes,
                     queries,
+                    answer: None,
                 });
             }
             notes.push("已改用本机搜索".into());
@@ -631,6 +679,17 @@ impl Core {
             }
         }
         results.sort_by_key(|r| !r.trusted);
+        let mut answer = None;
+        if let (Some(chat), Some(need)) = (&chat, &need) {
+            match self
+                .draft_answer(chat, need, passage.as_deref(), &results)
+                .await
+            {
+                Ok(Some(a)) => answer = Some(a),
+                Ok(None) => notes.push("AI 没能从白名单网页原文中找到可直接填写的内容".into()),
+                Err(e) => notes.push(format!("AI 读取网页失败：{e}")),
+            }
+        }
         // Files off the whitelist are only opened in the browser.
         let trusted: Vec<WebResult> = results.iter().filter(|r| r.trusted).cloned().collect();
         self.remember(&trusted);
@@ -639,6 +698,7 @@ impl Core {
             via: "local",
             notes,
             queries,
+            answer,
         })
     }
 
@@ -694,6 +754,77 @@ impl Core {
         }
         queries.truncate(3);
         Ok(queries)
+    }
+
+    /// Reads the top whitelisted pages and asks the chat model what to write
+    /// in the gap. An answer whose quote is not in the page is dropped.
+    async fn draft_answer(
+        &self,
+        chat: &crate::core::Target,
+        need: &str,
+        passage: Option<&str>,
+        results: &[WebResult],
+    ) -> Result<Option<WebAnswer>> {
+        let mut pages: Vec<(&WebResult, String)> = Vec::new();
+        for r in results
+            .iter()
+            .filter(|r| r.trusted && r.kind == ResultKind::Page)
+            .take(PAGES_TO_READ)
+        {
+            let Ok(url) = Url::parse(&r.url) else {
+                continue;
+            };
+            if !self.robots_allow(&url).await {
+                continue;
+            }
+            if let Ok(html) = self.fetch_text(&url, MAX_PAGE_BYTES).await {
+                let text: String = page_text(&html).chars().take(PAGE_CHARS).collect();
+                if !text.is_empty() {
+                    pages.push((r, text));
+                }
+            }
+        }
+        if pages.is_empty() {
+            return Ok(None);
+        }
+        let docs = pages
+            .iter()
+            .enumerate()
+            .map(|(i, (r, text))| format!("[{}] {}\n{text}", i + 1, r.title))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let v = self
+            .ask_json(
+                chat,
+                ANSWER_PROMPT,
+                format!("{}\n\n网页原文：\n{docs}", describe_need(need, passage)),
+            )
+            .await?;
+        let text = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        };
+        let (answer, quote) = (text("answer"), text("quote"));
+        let Some((r, page)) = v
+            .get("source")
+            .and_then(Value::as_u64)
+            .and_then(|i| (i as usize).checked_sub(1))
+            .and_then(|i| pages.get(i))
+        else {
+            return Ok(None);
+        };
+        if answer.is_empty() || quote.is_empty() || !squeeze(page).contains(&squeeze(&quote)) {
+            return Ok(None);
+        }
+        Ok(Some(WebAnswer {
+            text: answer,
+            quote,
+            title: r.title.clone(),
+            url: r.url.clone(),
+        }))
     }
 
     /// The results the chat model judges relevant to `need`, most relevant
@@ -853,6 +984,7 @@ impl Core {
         };
         let mut failed: HashSet<SearchEngine> = HashSet::new();
         let mut failed_sites = false;
+        let mut failed_api = false;
         let mut results: Vec<WebResult> = Vec::new();
         let mut others: Vec<WebResult> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -883,9 +1015,57 @@ impl Core {
                     }
                 }
             }
+            // A search API built for agents, when the user has one.
+            let service = settings.service;
+            if !failed_api && self.search_api_ready(service) && results.len() < MAX_RESULTS / 2 {
+                let narrowed: Vec<&str> = match service {
+                    SearchService::Zhipu if covers_gov => vec!["gov.cn"],
+                    SearchService::Zhipu | SearchService::None => Vec::new(),
+                    SearchService::Bocha | SearchService::Tavily => sites.clone(),
+                };
+                let passes = if narrowed.is_empty() {
+                    vec![Vec::new()]
+                } else {
+                    vec![narrowed, Vec::new()]
+                };
+                for filter in passes {
+                    if results.len() >= MAX_RESULTS / 2 {
+                        break;
+                    }
+                    match self
+                        .search_api(&self.web.http, service, query, &filter)
+                        .await
+                    {
+                        Ok(hits) => {
+                            for (link, title, snippet) in hits {
+                                let Some(u) = http_url(&link) else { continue };
+                                if !seen.insert(u.to_string()) {
+                                    continue;
+                                }
+                                let mut r = result(&title, u, &snippet);
+                                r.trusted = allowed(&r.site, whitelist);
+                                if r.trusted {
+                                    results.push(r);
+                                } else {
+                                    r.importable = false;
+                                    others.push(r);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            notes.push(format!("{}：{e}", service.label()));
+                            failed_api = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            // Scraping the engines is the last resort: they often refuse or
+            // mislead automated clients.
             let before = results.len() + others.len();
+            let api_found = !failed_api && self.search_api_ready(service) && before > 0;
             for engine in engines {
-                if failed.contains(&engine) {
+                if failed.contains(&engine) || api_found {
                     continue;
                 }
                 for q in [filtered.as_str(), query.as_str()] {

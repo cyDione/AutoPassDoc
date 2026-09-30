@@ -39,6 +39,8 @@ import type {
   Settings,
   Summary,
   UpdateInfo,
+  SearchService,
+  SearchServiceInfo,
   WebLookup,
   WebSearchOutcome,
 } from "./types";
@@ -182,6 +184,10 @@ export interface Backend {
   webSearch(request: WebLookup): Promise<WebSearchOutcome>;
   /** Downloads a file from the last search results and imports it into the knowledge base. */
   webDownloadToKb(url: string): Promise<KbImportReport>;
+  /** Search APIs (智谱 / 博查 / Tavily) and whether each has a key. */
+  searchServices(): Promise<SearchServiceInfo[]>;
+  setSearchKey(kind: SearchService, key: string): Promise<SearchServiceInfo[]>;
+  clearSearchKey(kind: SearchService): Promise<SearchServiceInfo[]>;
 
   // Window
   /** Asks the user to confirm a destructive step; resolves true to go ahead. */
@@ -366,6 +372,9 @@ async function tauriBackend(): Promise<Backend> {
     appInfo: () => invoke("app_info"),
     checkUpdate: () => invoke("check_update"),
     webSearch: (request) => invoke("web_search", { request }),
+    searchServices: () => invoke("search_services"),
+    setSearchKey: (kind, key) => invoke("set_search_key", { kind, key }),
+    clearSearchKey: (kind) => invoke("clear_search_key", { kind }),
     webDownloadToKb: (url) => invoke("web_download_to_kb", { url }),
 
     confirm: (message, title, okLabel) =>

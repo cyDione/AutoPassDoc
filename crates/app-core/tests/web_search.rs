@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use app_core::search_api::SearchService;
 use app_core::secrets::SecretStore;
 use app_core::settings::RoleModel;
 use app_core::store::ProviderRecord;
@@ -201,6 +202,25 @@ async fn ai_writes_the_terms_and_screens_results_whitelist_first() {
         .mount(&server)
         .await;
 
+    Mock::given(method("GET"))
+        .and(path("/b.html"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "<html><head><title>x</title><script>var a=1;</script></head><body><h1>关于印发《美丽上海建设“十五五”规划》的通知</h1><p>沪府发〔2026〕16号</p><p>现将《美丽上海建设“十五五”规划》印发给你们。</p></body></html>",
+            "text/html; charset=utf-8",
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_string_contains("可以直接替换"))
+        .respond_with(reply(json!({
+            "answer": "《美丽上海建设“十五五”规划》（沪府发〔2026〕16号）",
+            "source": 1,
+            "quote": "沪府发〔2026〕16号"
+        })))
+        .mount(&server)
+        .await;
+
     let out = core
         .web_lookup(&LookupRequest {
             query: None,
@@ -250,11 +270,68 @@ async fn ai_writes_the_terms_and_screens_results_whitelist_first() {
     assert!(out.results[0].trusted);
     assert_eq!(out.results[0].reason.as_deref(), Some("规划印发通知原文"));
     assert!(!out.results[1].trusted && !out.results[1].importable);
+    let answer = out.answer.as_ref().expect("answer");
+    assert_eq!(
+        answer.text,
+        "《美丽上海建设“十五五”规划》（沪府发〔2026〕16号）"
+    );
+    assert!(answer.url.ends_with("/b.html"));
     assert!(
         core.web_download_to_kb("https://news.example.com/c.html")
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn a_search_api_replaces_scraping_the_engines() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let core = core(dir.path(), &server, WebMode::Local);
+    {
+        let store = core.store();
+        let mut s = store.settings().unwrap();
+        s.web.service = SearchService::Bocha;
+        store.save_settings(&s).unwrap();
+    }
+    core.set_search_key(SearchService::Bocha, "bocha-key")
+        .unwrap();
+    core.set_search_api_base(SearchService::Bocha, &server.uri());
+    let base = server.uri();
+    Mock::given(method("POST"))
+        .and(path("/v1/web-search"))
+        .and(wiremock::matchers::header("authorization", "Bearer bocha-key"))
+        .and(body_string_contains("\"include\":\"127.0.0.1\""))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 200,
+            "data": {"webPages": {"value": [
+                {"name": "统计公报", "url": format!("{base}/gb.html"), "summary": "常住人口 2480 万"}
+            ]}}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/web-search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {"webPages": {"value": [
+                {"name": "媒体报道", "url": "https://news.example.com/x", "snippet": "转述"}
+            ]}}
+        })))
+        .mount(&server)
+        .await;
+    // The engines must not be scraped once the API has answered.
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let out = core.web_search("上海 常住人口").await.unwrap();
+    let titles: Vec<&str> = out.results.iter().map(|r| r.title.as_str()).collect();
+    assert_eq!(titles, ["统计公报", "媒体报道"], "{:?}", out.notes);
+    assert!(out.results[0].trusted && !out.results[1].trusted);
+    assert_eq!(out.results[0].snippet, "常住人口 2480 万");
 }
 
 #[tokio::test]

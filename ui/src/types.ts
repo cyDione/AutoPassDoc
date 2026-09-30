@@ -319,6 +319,27 @@ export interface WebSettings {
   engine: "bing" | "baidu";
   /** Domains the local search may use, matched as suffixes. */
   whitelist: string[];
+  /** A keyed search API tried before scraping the search engines. */
+  service: SearchService;
+}
+
+export type SearchService = "none" | "zhipu" | "bocha" | "tavily";
+
+export interface SearchServiceInfo {
+  kind: Exclude<SearchService, "none">;
+  name: string;
+  hasKey: boolean;
+  keyUrl: string;
+  note: string;
+}
+
+/** What to write in place of a "【待补充…】", read off a whitelisted page. */
+export interface WebAnswer {
+  text: string;
+  /** The supporting sentence, found verbatim in the page. */
+  quote: string;
+  title: string;
+  url: string;
 }
 
 export type ProviderKind = "openai" | "openrouter" | "anthropic" | "ollama";
@@ -484,6 +505,7 @@ export interface WebSearchOutcome {
   notes: string[];
   /** The search terms used, the first one for the search box. */
   queries: string[];
+  answer: WebAnswer | null;
 }
 
 export interface BackupManifest {
