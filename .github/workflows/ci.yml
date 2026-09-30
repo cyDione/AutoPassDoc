@@ -6,6 +6,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "发布版本（如 v0.2.0）：在当前提交上建立此标签并发布；留空只跑检查和打包"
+        required: false
+        default: ""
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -106,12 +111,14 @@ jobs:
 
   release:
     name: GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || startsWith(inputs.release_tag, 'v')
     needs: [check, windows, macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
+    env:
+      TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.release_tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -119,7 +126,7 @@ jobs:
           path: dist
       - name: Release notes from CHANGELOG.md
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${TAG#v}"
           awk -v ver="$version" '
             index($0, "## [" ver "]") == 1 { found = 1; next }
             found && /^## / { exit }
@@ -132,9 +139,11 @@ jobs:
           cat release-notes.md
       - uses: softprops/action-gh-release@v2
         with:
-          name: AutoPassDoc ${{ github.ref_name }}
+          name: AutoPassDoc ${{ env.TAG }}
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
           body_path: release-notes.md
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(env.TAG, '-') }}
           fail_on_unmatched_files: true
           files: |
             dist/**/*.exe
