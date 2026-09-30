@@ -106,6 +106,9 @@ fn max_tokens(target: &Target, input: &FixInput) -> u32 {
         .is_some_and(|t| t != models::ThinkingLevel::Off)
     {
         want += 8192;
+    } else if target.profile.reasoning != models::Reasoning::None {
+        // Some gateways ignore the off switch and the model still reasons.
+        want += 4096;
     }
     want.min(target.profile.max_output_tokens.max(1024))
 }

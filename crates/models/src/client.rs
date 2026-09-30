@@ -146,7 +146,9 @@ impl Client {
 
             let retry_after = parse_retry_after(resp.headers());
             let text = resp.text().await.unwrap_or_default();
-            let retryable = status.as_u16() == 429 || status.is_server_error();
+            // An empty answer is left to the caller, which retries it with a larger output limit.
+            let retryable = (status.as_u16() == 429 || status.is_server_error())
+                && !text.to_lowercase().contains("empty response");
             if retryable && attempt < self.config.max_attempts {
                 let backoff = self.config.retry_base_delay * 2u32.saturating_pow(attempt - 1);
                 let delay = match retry_after {
