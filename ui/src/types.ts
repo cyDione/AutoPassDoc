@@ -523,7 +523,21 @@ export interface UpdateInfo {
   notes: string;
   url: string | null;
   publishedAt: string | null;
-  assets: { name: string; url: string; size: number }[];
+  assets: ReleaseAsset[];
+  /** The installer the in-app update downloads on this machine; null when the release has none for it. */
+  installer: ReleaseAsset | null;
+}
+
+export interface ReleaseAsset {
+  name: string;
+  url: string;
+  size: number;
+  digest?: string;
+}
+
+export interface UpdateProgress {
+  downloaded: number;
+  total: number;
 }
 
 // ---- Document proofreading (文档校对) ----

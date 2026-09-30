@@ -39,6 +39,8 @@ import type {
   Settings,
   Summary,
   UpdateInfo,
+  UpdateProgress,
+  ReleaseAsset,
   WebSearchOutcome,
 } from "./types";
 
@@ -175,6 +177,12 @@ export interface Backend {
   onBackupProgress(handler: (p: BackupProgress) => void): Unsubscribe;
   appInfo(): Promise<AppInfo>;
   checkUpdate(): Promise<UpdateInfo>;
+  /** Downloads the installer, reporting through onUpdateProgress; resolves to its local path. */
+  downloadUpdate(installer: ReleaseAsset): Promise<string>;
+  cancelUpdateDownload(): Promise<void>;
+  /** Starts the downloaded installer and quits the app. */
+  installUpdate(path: string): Promise<void>;
+  onUpdateProgress(handler: (p: UpdateProgress) => void): Unsubscribe;
 
   // Web
   /** Searches the web: the chat model's own search first, else whitelisted sites from this machine. */
@@ -364,6 +372,10 @@ async function tauriBackend(): Promise<Backend> {
     onBackupProgress: (handler) => subscribe<BackupProgress>("backup-progress", handler),
     appInfo: () => invoke("app_info"),
     checkUpdate: () => invoke("check_update"),
+    downloadUpdate: (installer) => invoke("download_update", { installer }),
+    cancelUpdateDownload: () => invoke("cancel_update_download"),
+    installUpdate: (path) => invoke("install_update", { path }),
+    onUpdateProgress: (handler) => subscribe<UpdateProgress>("update-progress", handler),
     webSearch: (query) => invoke("web_search", { query }),
     webDownloadToKb: (url) => invoke("web_download_to_kb", { url }),
 
