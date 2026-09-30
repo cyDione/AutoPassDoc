@@ -149,6 +149,14 @@ function ServiceOptions({ kind, kb, set }: { kind: Service; kb: Kb; set: <K exte
             <option value="pipeline">pipeline</option>
           </select>
         </label>
+        <label className="check field-check">
+          <input type="checkbox" checked={kb.mineruOcr} onChange={(e) => set("mineruOcr", e.target.checked)} />
+          强制 OCR（扫描件、图片型 PDF 识别更稳）
+        </label>
+        <label className="check field-check">
+          <input type="checkbox" checked={kb.mineruFormula} onChange={(e) => set("mineruFormula", e.target.checked)} />
+          公式识别
+        </label>
       </div>
     );
   return (

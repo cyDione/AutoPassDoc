@@ -142,6 +142,10 @@ pub struct KbSettings {
     pub parser: ParserKind,
     /// MinerU `model_version`: `vlm` or `pipeline`.
     pub mineru_model: String,
+    /// MinerU `is_ocr`: OCR every page, for scans and image-only PDFs.
+    pub mineru_ocr: bool,
+    /// MinerU `enable_formula`: recognise formulas.
+    pub mineru_formula: bool,
     /// PaddleOCR service address; change it for a self-hosted service.
     pub paddleocr_base_url: String,
     /// `PaddleOCR-VL-1.6` or `PP-StructureV3`.
@@ -153,6 +157,8 @@ impl Default for KbSettings {
         Self {
             parser: ParserKind::Builtin,
             mineru_model: DEFAULT_MINERU_MODEL.into(),
+            mineru_ocr: true,
+            mineru_formula: true,
             paddleocr_base_url: DEFAULT_PADDLEOCR_BASE_URL.into(),
             paddleocr_model: DEFAULT_PADDLEOCR_MODEL.into(),
         }
@@ -231,6 +237,10 @@ mod tests {
         assert_eq!(s.kb.parser, ParserKind::Paddleocr);
         assert_eq!(s.kb.paddleocr_base_url, "http://ocr.local");
         assert_eq!(s.kb.mineru_model, "vlm");
+        assert!(
+            s.kb.mineru_ocr && s.kb.mineru_formula,
+            "on unless turned off"
+        );
         assert_eq!(s.kb.paddleocr_model, "PaddleOCR-VL-1.6");
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["kb"]["parser"], "paddleocr");

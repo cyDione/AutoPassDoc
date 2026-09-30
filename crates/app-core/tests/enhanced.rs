@@ -88,6 +88,8 @@ async fn mount_mineru(server: &MockServer, result: Value) {
         .and(path("/api/v4/file-urls/batch"))
         .and(header("authorization", format!("Bearer {TOKEN}").as_str()))
         .and(body_string_contains("\"model_version\":\"vlm\""))
+        .and(body_string_contains("\"is_ocr\":true"))
+        .and(body_string_contains("\"enable_formula\":true"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "code": 0,
             "msg": "ok",

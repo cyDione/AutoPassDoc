@@ -283,6 +283,10 @@ export interface KbSettings {
   parser: ParserKind;
   /** MinerU model: `vlm` or `pipeline`. */
   mineruModel: string;
+  /** MinerU `is_ocr`: OCR every page. */
+  mineruOcr: boolean;
+  /** MinerU `enable_formula`. */
+  mineruFormula: boolean;
   paddleocrBaseUrl: string;
   /** `PaddleOCR-VL-1.6` or `PP-StructureV3`. */
   paddleocrModel: string;

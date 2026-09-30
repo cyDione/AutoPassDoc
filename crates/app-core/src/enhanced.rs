@@ -238,6 +238,10 @@ pub struct MineruClient {
     pub token: String,
     /// `vlm` or `pipeline`.
     pub model_version: String,
+    /// `is_ocr`: OCR every page.
+    pub ocr: bool,
+    /// `enable_formula`.
+    pub formula: bool,
     pub poll: PollConfig,
     pub max_bytes: u64,
 }
@@ -249,6 +253,8 @@ impl MineruClient {
             base_url: MINERU_BASE_URL.into(),
             token: token.trim().to_string(),
             model_version: model_version.to_string(),
+            ocr: true,
+            formula: true,
             poll: PollConfig::default(),
             max_bytes: MAX_UPLOAD_BYTES,
         }
@@ -272,10 +278,14 @@ impl MineruClient {
             .map(|b| format!("{b:02x}"))
             .collect();
         let body = json!({
-            "files": [{"name": file_name, "data_id": format!("apd-{data_id}")}],
+            "files": [{
+                "name": file_name,
+                "data_id": format!("apd-{data_id}"),
+                "is_ocr": self.ocr,
+            }],
             "model_version": self.model_version,
             "enable_table": true,
-            "enable_formula": false,
+            "enable_formula": self.formula,
             "language": "ch",
         });
         let created = send_json(
@@ -722,6 +732,8 @@ impl Core {
                 base_url: options.mineru_base_url,
                 poll: options.poll,
                 max_bytes: options.max_bytes,
+                ocr: settings.mineru_ocr,
+                formula: settings.mineru_formula,
                 ..MineruClient::new(http, key, &settings.mineru_model)
             }),
             ParserKind::Paddleocr => EnhancedParser::Paddle(PaddleClient {

@@ -71,7 +71,7 @@ export function seedSettings(): Settings {
       profileEvery: 10,
     },
     web: { mode: "auto", modelSearch: null, engine: "bing", whitelist: [...DEFAULT_WHITELIST] },
-    kb: { parser: "builtin", mineruModel: "vlm", paddleocrBaseUrl: "https://paddleocr.aistudio-app.com", paddleocrModel: "PaddleOCR-VL-1.6" },
+    kb: { parser: "builtin", mineruModel: "vlm", mineruOcr: true, mineruFormula: true, paddleocrBaseUrl: "https://paddleocr.aistudio-app.com", paddleocrModel: "PaddleOCR-VL-1.6" },
   };
 }
 
