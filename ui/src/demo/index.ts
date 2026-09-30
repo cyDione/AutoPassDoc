@@ -341,10 +341,10 @@ export function createDemoBackend(): Backend {
   const backupListeners = new Set<(p: BackupProgress) => void>();
   const updateListeners = new Set<(p: UpdateProgress) => void>();
   let updateCancelled = false;
-  const demoInstaller = { name: "AutoPassDoc_0.2.1_x64-setup.exe", url: "https://github.com/cyDione/AutoPassDoc/releases", size: 9_800_000 };
+  const demoInstaller = { name: "AutoPassDoc_0.3.1_x64-setup.exe", url: "https://github.com/cyDione/AutoPassDoc/releases", size: 9_800_000 };
   const backupManifest = (): BackupManifest => ({
     format: 1,
-    appVersion: "0.2.0",
+    appVersion: "0.3.0",
     createdAt: unixNow(),
     documents: kbDocs.length,
     chunks: totalChunks(),
@@ -1015,14 +1015,14 @@ export function createDemoBackend(): Backend {
       backupListeners.add(handler);
       return () => backupListeners.delete(handler);
     },
-    appInfo: async () => ({ version: "0.2.0", dataDir: "C:\\Users\\演示\\AppData\\Roaming\\AutoPassDoc" }),
+    appInfo: async () => ({ version: "0.3.0", dataDir: "C:\\Users\\演示\\AppData\\Roaming\\AutoPassDoc" }),
     async checkUpdate() {
       await delay(600);
       return {
-        current: "0.2.0",
-        latest: "0.2.1",
+        current: "0.3.0",
+        latest: "0.3.1",
         hasUpdate: true,
-        name: "AutoPassDoc 0.2.1",
+        name: "AutoPassDoc 0.3.1",
         notes: "### 修复\n- 文档校对：修正跨页编号检查的误报。\n- 知识库：MinerU 解析大文件时的超时。",
         url: "https://github.com/cyDione/AutoPassDoc/releases",
         publishedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
