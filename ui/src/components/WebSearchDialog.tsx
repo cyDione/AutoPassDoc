@@ -8,8 +8,10 @@ import { errorMessage } from "../util";
 export interface WebSearchRequest {
   /** What the "【待补充…】" asks for. */
   need: string;
-  /** Section headings or the document name, added to the query to narrow it. */
-  context: string;
+  /** The text around the placeholder; the AI writes the search terms from it. */
+  passage?: string;
+  /** Ready-made search terms (citations), used as they are. */
+  query?: string;
   nonce: number;
 }
 
@@ -33,6 +35,7 @@ function ResultRow({ r, download, onOpen, onDownload }: { r: WebResult; download
         {r.fileType && <span className="tag">{r.fileType.toUpperCase()}</span>}
       </div>
       <div className="site">{r.site}</div>
+      {r.reason && <div className="snippet reason">AI：{r.reason}</div>}
       {r.snippet && <div className="snippet">{r.snippet}</div>}
       <div className="row">
         <button type="button" className="btn sm" onClick={onOpen}>
@@ -55,29 +58,32 @@ function ResultRow({ r, download, onOpen, onDownload }: { r: WebResult; download
 
 /** Looks up what a "【待补充…】" asks for and offers the files found to the knowledge base. */
 export function WebSearchDialog({ backend, request, onClose, notify }: Props) {
-  const [query, setQuery] = useState(() => [request.context, request.need].filter(Boolean).join(" "));
+  const [query, setQuery] = useState(request.query ?? "");
   const [outcome, setOutcome] = useState<WebSearchOutcome | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   const [downloads, setDownloads] = useState<ReadonlyMap<string, Download>>(() => new Map());
 
+  // Without typed terms the AI writes them from the need and its passage.
   const search = useCallback(
-    async (text: string) => {
+    async (text: string | undefined) => {
       setSearching(true);
       setError(null);
       try {
-        setOutcome(await backend.webSearch(text));
+        const found = await backend.webSearch({ query: text, need: request.need, passage: request.passage });
+        setOutcome(found);
+        if (!text && found.queries[0]) setQuery(found.queries[0]);
       } catch (e) {
         setError(errorMessage(e));
       } finally {
         setSearching(false);
       }
     },
-    [backend],
+    [backend, request],
   );
 
   useEffect(() => {
-    void search([request.context, request.need].filter(Boolean).join(" "));
+    void search(request.query);
   }, [request, search]);
 
   useEffect(() => {
@@ -98,6 +104,11 @@ export function WebSearchDialog({ backend, request, onClose, notify }: Props) {
       setDownload(r.url, { error: errorMessage(e) });
     }
   };
+  const results = outcome?.results ?? [];
+  const groups: [string, WebResult[]][] = [
+    ["白名单网站", results.filter((r) => r.trusted)],
+    ["其他网站（请核实来源）", results.filter((r) => !r.trusted)],
+  ];
   const open = (url: string) => void backend.openUrl(url).catch((e) => notify(`无法打开链接：${errorMessage(e)}`, true));
 
   return (
@@ -129,20 +140,29 @@ export function WebSearchDialog({ backend, request, onClose, notify }: Props) {
         <div className="dialog-content scroll web-results">
           {searching && !outcome && (
             <div className="loading">
-              <span className="spinner" /> 正在联网搜索…
+              <span className="spinner" /> {request.query ? "正在联网搜索…" : "AI 正在拟定搜索词并联网搜索…"}
             </div>
           )}
           {error && <div className="fix-note error">{error}</div>}
           {outcome && (
             <>
               <div className="web-via muted">
-                {outcome.via === "model" ? "由大语言模型联网搜索" : "由本机在白名单网站中搜索"}
+                {outcome.via === "model" ? "由大语言模型联网搜索" : "由本机搜索，AI 筛选结果"}
+                {outcome.queries.length > 1 && `，搜索词：${outcome.queries.join("｜")}`}
                 {outcome.notes.length > 0 && `（${outcome.notes.join("；")}）`}
               </div>
               {outcome.results.length === 0 && <div className="panel-empty">没有找到结果，换个说法再试试</div>}
-              {outcome.results.map((r) => (
-                <ResultRow key={r.url} r={r} download={downloads.get(r.url)} onOpen={() => open(r.url)} onDownload={() => void download(r)} />
-              ))}
+              {groups.map(
+                ([label, rows]) =>
+                  rows.length > 0 && (
+                    <section key={label} className="web-group">
+                      {groups[1][1].length > 0 && <div className="group-label">{label}</div>}
+                      {rows.map((r) => (
+                        <ResultRow key={r.url} r={r} download={downloads.get(r.url)} onOpen={() => open(r.url)} onDownload={() => void download(r)} />
+                      ))}
+                    </section>
+                  ),
+              )}
             </>
           )}
         </div>

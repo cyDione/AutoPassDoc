@@ -459,8 +459,21 @@ export interface WebResult {
   kind: "page" | "file";
   /** Lowercase extension of a file result. */
   fileType: string | null;
-  /** The knowledge base can import it (PDF, Word, TXT, Markdown). */
+  /** The knowledge base can import it (PDF, Word, TXT, Markdown); only files from whitelisted sites or the model's search. */
   importable: boolean;
+  /** On a whitelisted site. */
+  trusted: boolean;
+  /** Why the AI thinks it answers the need. */
+  reason: string | null;
+}
+
+export interface WebLookup {
+  /** Search terms typed by the user; written by the AI when absent. */
+  query?: string;
+  /** What the "【待补充…】" asks for. */
+  need?: string;
+  /** The text around the placeholder. */
+  passage?: string;
 }
 
 export interface WebSearchOutcome {
@@ -469,6 +482,8 @@ export interface WebSearchOutcome {
   via: "model" | "local";
   /** What was tried and why it fell back. */
   notes: string[];
+  /** The search terms used, the first one for the search box. */
+  queries: string[];
 }
 
 export interface BackupManifest {

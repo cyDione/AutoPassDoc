@@ -995,15 +995,17 @@ export function createDemoBackend(): Backend {
       };
     },
 
-    async webSearch(query) {
-      const q = query.trim();
+    async webSearch({ query, need }) {
+      const q = (query ?? need ?? "").trim();
       if (!q) throw new Error("请输入要查找的内容");
       await delay(900);
       const model = !!settings.roles.chat.model;
+      const terms = query ? [query.trim()] : model ? [`上海市 ${q.slice(0, 10)}`, `${q.slice(0, 8)} 文号`] : [q];
       const site = "https://tjj.sh.gov.cn";
       return {
-        via: model ? "model" : "local",
-        notes: model ? [] : ["尚未配置大语言模型，已改用本机白名单搜索"],
+        via: "local",
+        queries: terms,
+        notes: model ? [] : ["尚未配置大语言模型，无法由 AI 生成搜索词和筛选结果"],
         results: [
           {
             title: `2024年上海市国民经济和社会发展统计公报（${q.slice(0, 12)}）`,
@@ -1013,6 +1015,8 @@ export function createDemoBackend(): Backend {
             kind: "page",
             fileType: null,
             importable: false,
+            trusted: true,
+            reason: model ? "公报原文，含常住人口和地区生产总值" : null,
           },
           {
             title: "2024年上海市国民经济和社会发展统计公报（PDF 全文）",
@@ -1022,15 +1026,8 @@ export function createDemoBackend(): Backend {
             kind: "file",
             fileType: "pdf",
             importable: true,
-          },
-          {
-            title: "崇明区2024年国民经济和社会发展统计公报",
-            url: "https://www.shcm.gov.cn/tjj/2024gb.html",
-            site: "www.shcm.gov.cn",
-            snippet: "年末全区常住人口63.73万人，全年接待游客人次比上年增长。",
-            kind: "page",
-            fileType: null,
-            importable: false,
+            trusted: true,
+            reason: model ? "公报 PDF 全文，可存入知识库" : null,
           },
           {
             title: "崇明区统计年鉴2024（附表）",
@@ -1040,6 +1037,19 @@ export function createDemoBackend(): Backend {
             kind: "file",
             fileType: "xls",
             importable: false,
+            trusted: true,
+            reason: null,
+          },
+          {
+            title: `解读：${q.slice(0, 12)}`,
+            url: "https://www.example.com/news/2024gb.html",
+            site: "www.example.com",
+            snippet: "媒体对统计公报的解读文章。",
+            kind: "page",
+            fileType: null,
+            importable: false,
+            trusted: false,
+            reason: model ? "转述公报数据，需以原文为准" : null,
           },
         ],
       };

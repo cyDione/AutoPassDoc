@@ -25,6 +25,8 @@ const MAX_DOWNLOAD_BYTES: usize = 100 << 20;
 /// Result pages scanned for attachment links.
 const PAGES_TO_SCAN: usize = 3;
 const MAX_RESULTS: usize = 8;
+/// Results from sites off the whitelist, listed after the whitelisted ones.
+const MAX_OTHER_RESULTS: usize = 6;
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 AutoPassDoc";
 /// Attachment extensions offered for download.
 const FILE_TYPES: &[&str] = &[
@@ -48,7 +50,7 @@ pub enum WebMode {
     Off,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchEngine {
     #[default]
@@ -141,8 +143,12 @@ pub struct WebResult {
     pub kind: ResultKind,
     /// Lowercase extension of a file result.
     pub file_type: Option<String>,
-    /// The knowledge base can import it.
+    /// The knowledge base can import it (whitelisted or model-reported files only).
     pub importable: bool,
+    /// On a whitelisted site.
+    pub trusted: bool,
+    /// Why the AI thinks it answers the need.
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -153,6 +159,21 @@ pub struct SearchOutcome {
     pub via: &'static str,
     /// What was tried and why it fell back.
     pub notes: Vec<String>,
+    /// The search terms used, first the one shown in the search box.
+    pub queries: Vec<String>,
+}
+
+/// What to look up: typed terms, or a "【待补充…】" need with the text
+/// around it, from which the chat model writes the search terms.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LookupRequest {
+    /// Search terms typed by the user; written by the AI when empty.
+    pub query: Option<String>,
+    /// What the placeholder asks for.
+    pub need: Option<String>,
+    /// The sentence or paragraph around the placeholder.
+    pub passage: Option<String>,
 }
 
 /// HTTP client and what the searches have seen.
@@ -223,6 +244,8 @@ fn result(title: &str, url: Url, snippet: &str) -> WebResult {
             .is_some_and(|t| IMPORTABLE.contains(&t)),
         file_type,
         url: url.to_string(),
+        trusted: false,
+        reason: None,
     }
 }
 
@@ -403,6 +426,36 @@ const SEARCH_PROMPT: &str = "你是资料检索助手，帮助撰写政府项目
 [{\"title\": \"网页或文件标题\", \"url\": \"实际访问到的网址\", \"snippet\": \"与所找内容相关的一两句原文摘录\"}]
 url 必须是搜索中真实出现的地址，不要编造；找不到就输出 []。";
 
+const TERMS_PROMPT: &str = "你帮助撰写政府项目报告的人查资料。报告里有一处“待补充”，下面给出它要补充什么和所在的原文。请写出用搜索引擎查找这项资料的关键词。
+
+要求：
+- 抓住专有名词：规划、政策或文件的名称，地区，年份或“十四五”“十五五”这样的时期，发文机关；
+- 每组关键词用空格分隔，不超过 20 个字，不要写成问句，不要带文件名、项目名等与资料无关的词；
+- 最有把握的一组放在最前面，最多 3 组。
+
+只输出 JSON：{\"queries\": [\"关键词1\", \"关键词2\"]}";
+
+const SCREEN_PROMPT: &str = "你帮助撰写政府项目报告的人筛选搜索结果。给出报告里要补充的资料和一组编号的搜索结果，请挑出可能包含所需资料的结果，按相关程度从高到低排列，并用一句话说明各自能提供什么。与所需资料无关的结果不要列出。
+
+只输出 JSON：{\"keep\": [{\"i\": 编号, \"reason\": \"能提供什么\"}]}";
+
+/// What the AI is asked to find, for prompts.
+fn describe_need(need: &str, passage: Option<&str>) -> String {
+    match passage {
+        Some(p) => format!("要补充的资料：{need}\n所在原文：{p}"),
+        None => format!("要补充的资料：{need}"),
+    }
+}
+
+/// The JSON object in a model answer, tolerating code fences and chatter.
+fn json_object(text: &str) -> Option<Value> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    (end > start)
+        .then(|| serde_json::from_str::<Value>(&text[start..=end]).ok())
+        .flatten()
+}
+
 impl Core {
     /// Web settings saved by the user.
     fn web_settings(&self) -> Result<WebSettings> {
@@ -421,23 +474,67 @@ impl Core {
     /// Searches the web for `query`, by the chat model when it can, else
     /// through the whitelist.
     pub async fn web_search(&self, query: &str) -> Result<SearchOutcome> {
-        let query = query.trim();
-        if query.is_empty() {
-            return Err(Error::Invalid("请输入要查找的内容".into()));
-        }
+        self.web_lookup(&LookupRequest {
+            query: Some(query.to_string()),
+            ..LookupRequest::default()
+        })
+        .await
+    }
+
+    /// Looks up what a "【待补充…】" asks for. Without typed terms the chat
+    /// model writes them from the need and its passage; results from the
+    /// search engines are then screened by the model, whitelisted sites first.
+    pub async fn web_lookup(&self, req: &LookupRequest) -> Result<SearchOutcome> {
+        let trimmed = |s: &Option<String>| {
+            s.as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        let (typed, need, passage) = (
+            trimmed(&req.query),
+            trimmed(&req.need),
+            trimmed(&req.passage),
+        );
+        let passage = passage.map(|p| p.chars().take(400).collect::<String>());
         let settings = self.web_settings()?;
-        let mut notes = Vec::new();
         if settings.mode == WebMode::Off {
             return Err(Error::Invalid("联网搜索已在设置中关闭".into()));
         }
+        let Some(topic) = need.clone().or_else(|| typed.clone()) else {
+            return Err(Error::Invalid("请输入要查找的内容".into()));
+        };
+        let chat = self.require(RoleName::Chat).ok();
+        let mut notes = Vec::new();
+
+        let mut queries = Vec::new();
+        match (&typed, &chat) {
+            (Some(q), _) => queries.push(q.clone()),
+            (None, Some(chat)) => match self.search_terms(chat, &topic, passage.as_deref()).await {
+                Ok(q) => queries = q,
+                Err(e) => notes.push(format!("AI 生成搜索词失败：{e}")),
+            },
+            (None, None) => {}
+        }
+        if queries.is_empty() {
+            queries.push(topic.clone());
+        }
+
         if matches!(settings.mode, WebMode::Auto | WebMode::Model) {
-            match self.model_search(query, &settings).await {
-                Ok(results) if !results.is_empty() => {
+            let ask = describe_need(&queries[0], None)
+                + &need
+                    .as_deref()
+                    .map(|n| format!("\n{}", describe_need(n, passage.as_deref())))
+                    .unwrap_or_default();
+            match self.model_search(&ask, &settings).await {
+                Ok(mut results) if !results.is_empty() => {
+                    results.sort_by_key(|r| !r.trusted);
                     self.remember(&results);
                     return Ok(SearchOutcome {
                         results,
                         via: "model",
                         notes,
+                        queries,
                     });
                 }
                 Ok(_) => notes.push("大语言模型联网搜索没有找到结果".into()),
@@ -448,17 +545,143 @@ impl Core {
                     results: Vec::new(),
                     via: "model",
                     notes,
+                    queries,
                 });
             }
-            notes.push("已改用本机白名单搜索".into());
+            notes.push("已改用本机搜索".into());
         }
-        let results = self.local_search(query, &settings, &mut notes).await?;
-        self.remember(&results);
+        let mut results = self.local_search(&queries, &settings, &mut notes).await?;
+        if let Some(chat) = &chat
+            && results.len() > 1
+        {
+            match self
+                .screen(chat, &topic, passage.as_deref(), &results)
+                .await
+            {
+                Ok(kept) if kept.is_empty() => {
+                    notes.push("AI 认为这些结果都不太相关，仍列出供参考".into())
+                }
+                Ok(kept) => results = kept,
+                Err(e) => notes.push(format!("AI 筛选结果失败：{e}")),
+            }
+        }
+        results.sort_by_key(|r| !r.trusted);
+        // Files off the whitelist are only opened in the browser.
+        let trusted: Vec<WebResult> = results.iter().filter(|r| r.trusted).cloned().collect();
+        self.remember(&trusted);
         Ok(SearchOutcome {
             results,
             via: "local",
             notes,
+            queries,
         })
+    }
+
+    /// Asks the chat model (without web access) for a JSON answer.
+    async fn ask_json(
+        &self,
+        chat: &crate::core::Target,
+        system: &str,
+        user: String,
+    ) -> Result<Value> {
+        let mut req = ChatRequest::new(
+            chat.model.clone(),
+            vec![Message::system(system), Message::user(user)],
+        );
+        req.profile = chat.profile.clone();
+        req.max_tokens = Some(1024.min(chat.profile.max_output_tokens.max(512)));
+        req.temperature = Some(0.1);
+        req.json_output = true;
+        let response = self
+            .client()
+            .chat(&chat.provider, &req)
+            .await
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        json_object(&response.content).ok_or_else(|| Error::Invalid("模型没有按格式回答".into()))
+    }
+
+    /// Search terms for `need`, written by the chat model.
+    async fn search_terms(
+        &self,
+        chat: &crate::core::Target,
+        need: &str,
+        passage: Option<&str>,
+    ) -> Result<Vec<String>> {
+        let answer = self
+            .ask_json(chat, TERMS_PROMPT, describe_need(need, passage))
+            .await?;
+        let mut queries: Vec<String> = Vec::new();
+        for q in answer
+            .get("queries")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            let q = SPACE
+                .replace_all(q.trim(), " ")
+                .chars()
+                .take(40)
+                .collect::<String>();
+            if !q.is_empty() && !queries.contains(&q) {
+                queries.push(q);
+            }
+        }
+        queries.truncate(3);
+        Ok(queries)
+    }
+
+    /// The results the chat model judges relevant to `need`, most relevant
+    /// first, each with the model's reason.
+    async fn screen(
+        &self,
+        chat: &crate::core::Target,
+        need: &str,
+        passage: Option<&str>,
+        results: &[WebResult],
+    ) -> Result<Vec<WebResult>> {
+        let list = results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let snippet: String = r.snippet.chars().take(160).collect();
+                format!("[{}] {}（{}）{}", i + 1, r.title, r.site, snippet)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let answer = self
+            .ask_json(
+                chat,
+                SCREEN_PROMPT,
+                format!("{}\n\n搜索结果：\n{list}", describe_need(need, passage)),
+            )
+            .await?;
+        let mut kept: Vec<WebResult> = Vec::new();
+        for item in answer
+            .get("keep")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(i) = item.get("i").and_then(Value::as_u64) else {
+                continue;
+            };
+            let Some(r) = (i as usize).checked_sub(1).and_then(|i| results.get(i)) else {
+                continue;
+            };
+            if kept.iter().any(|k| k.url == r.url) {
+                continue;
+            }
+            let mut r = r.clone();
+            r.reason = item
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            kept.push(r);
+        }
+        Ok(kept)
     }
 
     fn remember(&self, results: &[WebResult]) {
@@ -484,7 +707,7 @@ impl Core {
             chat.model.clone(),
             vec![
                 Message::system(SEARCH_PROMPT),
-                Message::user(format!("要查找的内容：{query}")),
+                Message::user(query.to_string()),
             ],
         );
         req.profile = chat.profile.clone();
@@ -523,12 +746,17 @@ impl Core {
             }
         }
         out.truncate(MAX_RESULTS);
+        for r in &mut out {
+            r.trusted = allowed(&r.site, &settings.whitelist);
+        }
         Ok(out)
     }
 
+    /// Results for `queries` from the search engines: whitelisted sites
+    /// first, then a few others. Files are importable only from whitelisted sites.
     async fn local_search(
         &self,
-        query: &str,
+        queries: &[String],
         settings: &WebSettings,
         notes: &mut Vec<String>,
     ) -> Result<Vec<WebResult>> {
@@ -543,7 +771,7 @@ impl Core {
         let sites: Vec<&str> = whitelist
             .iter()
             .map(|w| w.trim())
-            .filter(|w| !w.is_empty() && !(covers_gov && w.ends_with(".gov.cn")))
+            .filter(|w| !(w.is_empty() || covers_gov && w.ends_with(".gov.cn")))
             .take(8)
             .collect();
         let site_filter = sites
@@ -551,73 +779,89 @@ impl Core {
             .map(|s| format!("site:{s}"))
             .collect::<Vec<_>>()
             .join(" OR ");
-        let filtered = if sites.len() > 1 {
-            format!("{query} ({site_filter})")
-        } else {
-            format!("{query} {site_filter}")
-        };
         // Search engines often ignore or mishandle a long `site:` group, so
-        // the bare query runs too and its results are held to the whitelist
-        // here. If the chosen engine finds nothing, the other one is tried.
+        // the bare query runs too. If the chosen engine finds nothing, the
+        // other one is tried.
         let engines = match settings.engine {
             SearchEngine::Bing => [SearchEngine::Bing, SearchEngine::Baidu],
             SearchEngine::Baidu => [SearchEngine::Baidu, SearchEngine::Bing],
         };
-        let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        let mut failed: HashSet<SearchEngine> = HashSet::new();
         let mut results: Vec<WebResult> = Vec::new();
+        let mut others: Vec<WebResult> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
-        for engine in engines {
-            for q in [filtered.as_str(), query] {
-                if results.len() >= MAX_RESULTS / 2 {
-                    break;
+        for query in queries {
+            if results.len() >= MAX_RESULTS / 2 {
+                break;
+            }
+            let filtered = if sites.len() > 1 {
+                format!("{query} ({site_filter})")
+            } else {
+                format!("{query} {site_filter}")
+            };
+            let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+            let before = results.len() + others.len();
+            for engine in engines {
+                if failed.contains(&engine) {
+                    continue;
                 }
-                let (url, found) = match self.engine_search(engine, q).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        notes.push(format!("{}：{e}", engine.label()));
+                for q in [filtered.as_str(), query.as_str()] {
+                    if results.len() >= MAX_RESULTS / 2 {
                         break;
                     }
-                };
-                if found.is_empty() {
-                    notes.push(format!(
-                        "{}没有返回可识别的结果（可能要求人机验证）",
-                        engine.label()
-                    ));
-                    break;
-                }
-                let total = found.len();
-                for (link, title, snippet) in found {
-                    let Some(u) = url
-                        .join(&link)
-                        .ok()
-                        .filter(|u| matches!(u.scheme(), "http" | "https"))
-                    else {
-                        continue;
+                    let (url, found) = match self.engine_search(engine, q).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            notes.push(format!("{}：{e}", engine.label()));
+                            failed.insert(engine);
+                            break;
+                        }
                     };
-                    // Engines that suspect a bot serve unrelated results.
-                    let text = format!("{title}{snippet}").to_lowercase();
-                    if u.host_str().is_some_and(|h| allowed(h, whitelist))
-                        && mentions(&text, &terms)
-                        && seen.insert(u.to_string())
-                    {
-                        results.push(result(&title, u, &snippet));
+                    if found.is_empty() {
+                        notes.push(format!(
+                            "{}没有返回可识别的结果（可能要求人机验证）",
+                            engine.label()
+                        ));
+                        failed.insert(engine);
+                        break;
+                    }
+                    for (link, title, snippet) in found {
+                        let Some(u) = url
+                            .join(&link)
+                            .ok()
+                            .filter(|u| matches!(u.scheme(), "http" | "https"))
+                        else {
+                            continue;
+                        };
+                        // Engines that suspect a bot serve unrelated results.
+                        let text = format!("{title}{snippet}").to_lowercase();
+                        if !mentions(&text, &terms) || !seen.insert(u.to_string()) {
+                            continue;
+                        }
+                        let mut r = result(&title, u, &snippet);
+                        r.trusted = allowed(&r.site, whitelist);
+                        if r.trusted {
+                            results.push(r);
+                        } else {
+                            r.importable = false;
+                            others.push(r);
+                        }
                     }
                 }
-                if results.is_empty() && q == query {
-                    notes.push(format!(
-                        "{}找到 {total} 条结果，但都不在白名单网站中",
-                        engine.label()
-                    ));
+                if results.len() + others.len() > before {
+                    break;
                 }
-            }
-            if !results.is_empty() {
-                break;
             }
         }
         results.truncate(MAX_RESULTS);
+        others.truncate(MAX_OTHER_RESULTS);
         if results.is_empty() {
-            notes.push("白名单网站中没有找到结果".into());
-            return Ok(results);
+            notes.push(if others.is_empty() {
+                "没有找到结果".into()
+            } else {
+                "白名单网站中没有找到，下面是其他网站的结果，请注意核实来源".into()
+            });
+            return Ok(others);
         }
 
         // Pages often link the document itself as an attachment.
@@ -655,9 +899,12 @@ impl Core {
                 } else {
                     text
                 };
-                results.push(result(&title, file, &format!("附件，来自：{parent}")));
+                let mut r = result(&title, file, &format!("附件，来自：{parent}"));
+                r.trusted = true;
+                results.push(r);
             }
         }
+        results.extend(others);
         Ok(results)
     }
 

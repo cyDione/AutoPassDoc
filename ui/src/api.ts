@@ -39,6 +39,7 @@ import type {
   Settings,
   Summary,
   UpdateInfo,
+  WebLookup,
   WebSearchOutcome,
 } from "./types";
 
@@ -178,7 +179,7 @@ export interface Backend {
 
   // Web
   /** Searches the web: the chat model's own search first, else whitelisted sites from this machine. */
-  webSearch(query: string): Promise<WebSearchOutcome>;
+  webSearch(request: WebLookup): Promise<WebSearchOutcome>;
   /** Downloads a file from the last search results and imports it into the knowledge base. */
   webDownloadToKb(url: string): Promise<KbImportReport>;
 
@@ -364,7 +365,7 @@ async function tauriBackend(): Promise<Backend> {
     onBackupProgress: (handler) => subscribe<BackupProgress>("backup-progress", handler),
     appInfo: () => invoke("app_info"),
     checkUpdate: () => invoke("check_update"),
-    webSearch: (query) => invoke("web_search", { query }),
+    webSearch: (request) => invoke("web_search", { request }),
     webDownloadToKb: (url) => invoke("web_download_to_kb", { url }),
 
     confirm: (message, title, okLabel) =>

@@ -14,30 +14,42 @@ interface Props {
   onRegenerate: (mode?: FixMode) => void;
   onReject: () => void;
   onOpenCitation: (path: string) => void;
-  /** Searches the web for what a placeholder asks for. */
-  onSearch: (need: string) => void;
+  /** Searches the web for what a placeholder asks for, given the text around it. */
+  onSearch: (need: string, passage: string) => void;
 }
 
 const PLACEHOLDER_RE = /【待补充[:：]?([^】]*)】/g;
 
+interface Need {
+  need: string;
+  /** The text around the placeholder, so the AI knows what it is about. */
+  passage: string;
+}
+
 /** What each "【待补充：…】" in the proposal asks for, without repeats. */
-function placeholderNeeds(proposal: FixProposal): string[] {
-  const needs = new Set<string>();
-  for (const p of proposal.paragraphs) for (const m of p.new.matchAll(PLACEHOLDER_RE)) needs.add(m[1].trim() || "待补充内容");
-  return [...needs];
+function placeholderNeeds(proposal: FixProposal): Need[] {
+  const needs = new Map<string, Need>();
+  for (const p of proposal.paragraphs)
+    for (const m of p.new.matchAll(PLACEHOLDER_RE)) {
+      const need = m[1].trim() || "待补充内容";
+      const at = m.index ?? 0;
+      const passage = p.new.slice(Math.max(0, at - 160), at + m[0].length + 60);
+      if (!needs.has(need)) needs.set(need, { need, passage });
+    }
+  return [...needs.values()];
 }
 
 /** Lists what the model could not fill in, each with a web search. */
-function Placeholders({ needs, onSearch }: { needs: string[]; onSearch: (need: string) => void }) {
+function Placeholders({ needs, onSearch }: { needs: Need[]; onSearch: (need: string, passage: string) => void }) {
   return (
     <div className="fix-placeholders">
       <div className="head">
         <AlertTriangle size={13} /> 修改里有待补充的内容，补充成实际内容后才能应用
       </div>
-      {needs.map((need) => (
+      {needs.map(({ need, passage }) => (
         <div key={need} className="need">
           <span className="text">{need}</span>
-          <button type="button" className="btn sm" onClick={() => onSearch(need)}>
+          <button type="button" className="btn sm" onClick={() => onSearch(need, passage)}>
             <Globe size={12} /> 查找资料
           </button>
         </div>

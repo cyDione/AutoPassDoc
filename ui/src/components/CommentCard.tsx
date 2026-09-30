@@ -15,7 +15,7 @@ export interface CardActions extends FixActions {
   openAuthor: (author: string, anchor: HTMLElement) => void;
   openCitation: (path: string) => void;
   /** Looks up what a "【待补充…】" asks for on the web. */
-  search: (comment: CommentView, need: string) => void;
+  search: (comment: CommentView, need: string, passage: string) => void;
 }
 
 interface Props {
@@ -197,7 +197,7 @@ export const CommentCard = memo(function CommentCard({
         onRegenerate={(mode) => actions.fix(c.id, { mode, selection: selection ?? undefined })}
         onReject={() => actions.reject(c.id, fix.proposal)}
         onOpenCitation={actions.openCitation}
-        onSearch={(need) => actions.search(c, need)}
+        onSearch={(need, passage) => actions.search(c, need, passage)}
       />
     );
   else if (fix?.kind === "applied")

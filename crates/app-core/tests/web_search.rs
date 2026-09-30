@@ -6,11 +6,11 @@ use std::time::Duration;
 use app_core::secrets::SecretStore;
 use app_core::settings::RoleModel;
 use app_core::store::ProviderRecord;
-use app_core::web::{ResultKind, WebMode};
+use app_core::web::{LookupRequest, ResultKind, WebMode};
 use app_core::{Core, providers};
 use models::{Client, ClientConfig, WebSearch};
 use serde_json::json;
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{body_string_contains, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn core(dir: &std::path::Path, server: &MockServer, mode: WebMode) -> Core {
@@ -158,6 +158,103 @@ async fn falls_back_to_the_whitelist_and_downloads_attachments() {
     let docs = core.kb_documents().unwrap();
     assert_eq!(docs.len(), 1);
     assert_eq!(docs[0].title, "政务信息化项目管理办法");
+}
+
+#[tokio::test]
+async fn ai_writes_the_terms_and_screens_results_whitelist_first() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let core = core(dir.path(), &server, WebMode::Local);
+    let base = server.uri();
+    let reply = |content: serde_json::Value| {
+        ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"role": "assistant", "content": content.to_string()}}]
+        }))
+    };
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_string_contains("搜索引擎查找这项资料的关键词"))
+        .and(body_string_contains("衔接美丽上海建设"))
+        .respond_with(reply(
+            json!({"queries": ["美丽上海建设 十五五 规划", "美丽上海 十五五 文号"]}),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_string_contains("筛选搜索结果"))
+        .respond_with(reply(json!({"keep": [
+            {"i": 3, "reason": "媒体解读，提到规划名称"},
+            {"i": 2, "reason": "规划印发通知原文"}
+        ]})))
+        .mount(&server)
+        .await;
+    let results = format!(
+        r#"<ol><li class="b_algo"><h2><a href="{base}/a.html">美丽上海建设三年行动计划</a></h2><p>2022年</p></li>
+        <li class="b_algo"><h2><a href="{base}/b.html">关于印发美丽上海建设“十五五”规划的通知</a></h2><p>沪府发</p></li>
+        <li class="b_algo"><h2><a href="https://news.example.com/c.html">解读美丽上海十五五规划</a></h2></li>
+        <li class="b_algo"><h2><a href="https://junk.example.com/d.html">Amazon Sign-In</a></h2></li></ol>"#
+    );
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(results, "text/html; charset=utf-8"))
+        .mount(&server)
+        .await;
+
+    let out = core
+        .web_lookup(&LookupRequest {
+            query: None,
+            need: Some("需核实规划名称、文号及具体衔接要求".into()),
+            passage: Some("为深入贯彻落实国家关于数字经济高质量发展的决策部署，衔接美丽上海建设“十五五”规划有关要求【待补充：需核实规划名称、文号及具体衔接要求】，本项目".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(out.via, "local");
+    assert_eq!(out.queries[0], "美丽上海建设 十五五 规划");
+    let searched: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/search")
+        .filter_map(|r| {
+            r.url
+                .query_pairs()
+                .find(|(k, _)| k == "q")
+                .map(|(_, v)| v.into_owned())
+        })
+        .collect();
+    // Only the AI's terms are searched, the likeliest first.
+    assert!(
+        searched[0].starts_with("美丽上海建设 十五五 规划"),
+        "{searched:?}"
+    );
+    assert!(
+        searched
+            .iter()
+            .all(|q| q.starts_with("美丽上海建设 十五五 规划")
+                || q.starts_with("美丽上海 十五五 文号")),
+        "{searched:?}"
+    );
+    // The screened results, whitelisted first; the junk never reaches the model.
+    let titles: Vec<&str> = out.results.iter().map(|r| r.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        [
+            "关于印发美丽上海建设“十五五”规划的通知",
+            "解读美丽上海十五五规划"
+        ],
+        "{:?}",
+        out.notes
+    );
+    assert!(out.results[0].trusted);
+    assert_eq!(out.results[0].reason.as_deref(), Some("规划印发通知原文"));
+    assert!(!out.results[1].trusted && !out.results[1].importable);
+    assert!(
+        core.web_download_to_kb("https://news.example.com/c.html")
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

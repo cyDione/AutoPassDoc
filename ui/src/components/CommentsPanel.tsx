@@ -33,7 +33,7 @@ interface Props {
   onAuthors: (authors: AuthorView[]) => void;
   onOpenSettings: () => void;
   /** Opens the web search for what a "【待补充…】" in a comment's fix asks for. */
-  onSearch: (comment: CommentView, need: string) => void;
+  onSearch: (comment: CommentView, need: string, passage: string) => void;
   notify: Notify;
   /** `margin`: cards are drawn in the document's page margin instead of this panel (C-4). */
   layout: CommentLayout;

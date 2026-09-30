@@ -204,17 +204,9 @@ export default function App() {
     [navigate],
   );
 
-  const docName = doc?.fileName;
-  const onSearch = useCallback(
-    (_comment: CommentView, need: string) => {
-      // The document's name usually carries the place and project, which narrows the search.
-      const context = (docName ?? "").replace(/\.docx$/i, "").replace(/[_-]?AutoPassDoc$/i, "").slice(0, 24);
-      setWebSearch({ need, context, nonce: Date.now() });
-    },
-    [docName],
-  );
+  const onSearch = useCallback((_comment: CommentView, need: string, passage: string) => setWebSearch({ need, passage, nonce: Date.now() }), []);
   const closeWebSearch = useCallback(() => setWebSearch(null), []);
-  const onSearchCitation = useCallback((need: string) => setWebSearch({ need, context: "", nonce: Date.now() }), []);
+  const onSearchCitation = useCallback((query: string) => setWebSearch({ need: query, query, nonce: Date.now() }), []);
 
   const onOpen = useCallback(() => void openPicker(), [openPicker]);
   const collapseSidebar = useCallback(() => setSidebarOpen(false), []);
