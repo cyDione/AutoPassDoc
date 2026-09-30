@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { Download, ExternalLink, RefreshCw } from "lucide-react";
+import { Download, ExternalLink, RefreshCw, X } from "lucide-react";
 import type { Backend } from "../../api";
-import type { AppInfo, UpdateInfo } from "../../types";
+import type { AppInfo, UpdateInfo, UpdateProgress } from "../../types";
 import { errorMessage } from "../../util";
 import { MiniMarkdown } from "../MiniMarkdown";
 import changelog from "../../../../CHANGELOG.md?raw";
@@ -17,6 +17,10 @@ export function AboutTab({ backend }: { backend: Backend }) {
   const [checking, setChecking] = useState(false);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // In-app update: downloading → installing (the app quits once the installer starts).
+  const [phase, setPhase] = useState<"idle" | "downloading" | "installing">("idle");
+  const [progress, setProgress] = useState<UpdateProgress | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -28,6 +32,32 @@ export function AboutTab({ backend }: { backend: Backend }) {
       cancelled = true;
     };
   }, [backend]);
+
+  useEffect(() => backend.onUpdateProgress(setProgress), [backend]);
+
+  const install = async () => {
+    const installer = update?.installer;
+    if (!update || !installer) return;
+    const ok = await backend.confirm(
+      `将下载 ${update.latest} 版安装包（${sizeText(installer.size)}），下载完成后 AutoPassDoc 会自动关闭并安装，装好后重新打开。请先保存正在编辑的文档。`,
+      "更新到新版本",
+      "下载并安装",
+    );
+    if (!ok) return;
+    setInstallError(null);
+    setProgress(null);
+    setPhase("downloading");
+    try {
+      const path = await backend.downloadUpdate(installer);
+      setPhase("installing");
+      await backend.installUpdate(path);
+    } catch (e) {
+      setInstallError(errorMessage(e));
+      setPhase("idle");
+    }
+  };
+
+  const percent = progress && progress.total > 0 ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100)) : 0;
 
   const check = async () => {
     setChecking(true);
@@ -75,22 +105,44 @@ export function AboutTab({ backend }: { backend: Backend }) {
               <strong>发现新版本 {update.latest}</strong>
               {update.publishedAt && <span className="muted">发布于 {update.publishedAt.slice(0, 10)}</span>}
               <span className="spacer" />
-              {update.url && (
-                <button type="button" className="btn sm primary" onClick={() => void backend.openUrl(update.url!)}>
-                  <Download size={13} /> 前往下载
-                </button>
+              {update.installer ? (
+                phase === "idle" && (
+                  <button type="button" className="btn sm primary" onClick={() => void install()}>
+                    <Download size={13} /> 下载并安装
+                  </button>
+                )
+              ) : (
+                update.url && (
+                  <button type="button" className="btn sm" onClick={() => void backend.openUrl(update.url!)}>
+                    <ExternalLink size={13} /> 前往下载
+                  </button>
+                )
               )}
             </div>
-            {update.notes.trim() && <MiniMarkdown text={update.notes} />}
-            {update.assets.length > 0 && (
-              <div className="update-assets">
-                {update.assets.map((a) => (
-                  <button key={a.url} type="button" className="link-btn" onClick={() => void backend.openUrl(a.url)}>
-                    {a.name}（{sizeText(a.size)}）
+            {phase === "downloading" && (
+              <div className="update-progress">
+                <div className="progress">
+                  <span style={{ width: `${percent}%` }} />
+                </div>
+                <div className="update-progress-row muted">
+                  <span>
+                    正在下载 {progress ? `${sizeText(progress.downloaded)} / ${sizeText(progress.total)}（${percent}%）` : "…"}
+                  </span>
+                  <span className="spacer" />
+                  <button type="button" className="btn sm ghost" onClick={() => void backend.cancelUpdateDownload()}>
+                    <X size={13} /> 取消
                   </button>
-                ))}
+                </div>
               </div>
             )}
+            {phase === "installing" && (
+              <div className="update-progress-row">
+                <span className="spinner sm" /> 正在启动安装程序，AutoPassDoc 即将关闭…
+              </div>
+            )}
+            {installError && <div className="form-message error">更新失败：{installError}</div>}
+            {!update.installer && <p className="setting-hint">这个版本没有适用于当前系统的安装包，请前往发布页手动下载。</p>}
+            {update.notes.trim() && <MiniMarkdown text={update.notes} />}
           </div>
         )}
       </div>

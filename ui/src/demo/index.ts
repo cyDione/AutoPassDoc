@@ -1,5 +1,6 @@
 import type { Backend } from "../api";
 import type {
+  UpdateProgress,
   AuthorView,
   BlockView,
   Case,
@@ -338,6 +339,9 @@ export function createDemoBackend(): Backend {
   const proofListeners = new Set<(p: ProofProgress) => void>();
   let proofCancel = false;
   const backupListeners = new Set<(p: BackupProgress) => void>();
+  const updateListeners = new Set<(p: UpdateProgress) => void>();
+  let updateCancelled = false;
+  const demoInstaller = { name: "AutoPassDoc_0.2.1_x64-setup.exe", url: "https://github.com/cyDione/AutoPassDoc/releases", size: 9_800_000 };
   const backupManifest = (): BackupManifest => ({
     format: 1,
     appVersion: "0.2.0",
@@ -1022,8 +1026,29 @@ export function createDemoBackend(): Backend {
         notes: "### 修复\n- 文档校对：修正跨页编号检查的误报。\n- 知识库：MinerU 解析大文件时的超时。",
         url: "https://github.com/cyDione/AutoPassDoc/releases",
         publishedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
-        assets: [{ name: "AutoPassDoc_0.2.1_x64-setup.exe", url: "https://github.com/cyDione/AutoPassDoc/releases", size: 9_800_000 }],
+        assets: [demoInstaller],
+        installer: demoInstaller,
       };
+    },
+    async downloadUpdate(installer) {
+      updateCancelled = false;
+      for (let done = 0; done <= installer.size; done += installer.size / 25) {
+        if (updateCancelled) throw new Error("已取消下载");
+        for (const l of updateListeners) l({ downloaded: Math.round(done), total: installer.size });
+        await delay(120);
+      }
+      return `C:\\Users\\演示\\AppData\\Local\\Temp\\AutoPassDoc-update\\${installer.name}`;
+    },
+    async cancelUpdateDownload() {
+      updateCancelled = true;
+    },
+    async installUpdate() {
+      await delay(400);
+      throw new Error("演示模式不会真的安装更新");
+    },
+    onUpdateProgress(handler) {
+      updateListeners.add(handler);
+      return () => updateListeners.delete(handler);
     },
 
     async webSearch({ query, need }) {

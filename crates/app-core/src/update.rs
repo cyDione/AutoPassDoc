@@ -1,8 +1,14 @@
 //! Update check (S-2): the latest GitHub release compared with the running
-//! version.
+//! version, and the in-app update: download this platform's installer,
+//! verify it and hand over to it.
 
 use std::cmp::Ordering;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::Duration;
+
+use sha2::{Digest, Sha256};
 
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +27,9 @@ pub struct ReleaseAsset {
     pub url: String,
     /// Bytes.
     pub size: u64,
+    /// `sha256:<hex>` as GitHub reports it, when it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +49,9 @@ pub struct UpdateInfo {
     /// RFC 3339.
     pub published_at: Option<String>,
     pub assets: Vec<ReleaseAsset>,
+    /// The asset the in-app update downloads and runs on this machine;
+    /// `None` when the release has nothing for this platform.
+    pub installer: Option<ReleaseAsset>,
 }
 
 #[derive(Deserialize)]
@@ -59,6 +71,8 @@ struct Asset {
     browser_download_url: String,
     #[serde(default)]
     size: u64,
+    #[serde(default)]
+    digest: Option<String>,
 }
 
 /// Asks `api_url` (normally [`RELEASES_URL`]) for the latest release and
@@ -94,6 +108,7 @@ pub async fn check_update(current: &str, api_url: &str) -> Result<UpdateInfo> {
             url: None,
             published_at: None,
             assets: Vec::new(),
+            installer: None,
         });
     }
     if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::TOO_MANY_REQUESTS
@@ -112,6 +127,16 @@ pub async fn check_update(current: &str, api_url: &str) -> Result<UpdateInfo> {
         .trim()
         .trim_start_matches(['v', 'V'])
         .to_string();
+    let assets: Vec<ReleaseAsset> = release
+        .assets
+        .into_iter()
+        .map(|a| ReleaseAsset {
+            name: a.name,
+            url: a.browser_download_url,
+            size: a.size,
+            digest: a.digest.filter(|d| !d.trim().is_empty()),
+        })
+        .collect();
     Ok(UpdateInfo {
         has_update: compare_versions(&latest, &current) == Ordering::Greater,
         current,
@@ -120,17 +145,208 @@ pub async fn check_update(current: &str, api_url: &str) -> Result<UpdateInfo> {
         notes: release.body.unwrap_or_default(),
         url: release.html_url,
         published_at: release.published_at,
-        assets: release
-            .assets
-            .into_iter()
-            .map(|a| ReleaseAsset {
-                name: a.name,
-                url: a.browser_download_url,
-                size: a.size,
-            })
-            .collect(),
+        installer: pick_installer(&assets, std::env::consts::OS, std::env::consts::ARCH).cloned(),
+        assets,
     })
 }
+
+/// The installer for `os`/`arch` (as in [`std::env::consts`]): on Windows
+/// the NSIS `-setup.exe`, else the `.msi`; on macOS the `.dmg` built for this
+/// architecture (or one that names none).
+pub fn pick_installer<'a>(
+    assets: &'a [ReleaseAsset],
+    os: &str,
+    arch: &str,
+) -> Option<&'a ReleaseAsset> {
+    let named = |a: &ReleaseAsset, suffix: &str| a.name.to_ascii_lowercase().ends_with(suffix);
+    let arch_tags: &[&str] = match arch {
+        "x86_64" => &["x64", "x86_64", "amd64"],
+        "aarch64" => &["aarch64", "arm64"],
+        "x86" => &["x86", "i686"],
+        _ => &[],
+    };
+    let all_tags = ["x64", "x86_64", "amd64", "aarch64", "arm64", "i686", "x86"];
+    let lower = |a: &ReleaseAsset| a.name.to_ascii_lowercase();
+    let for_arch = |a: &ReleaseAsset| arch_tags.iter().any(|t| lower(a).contains(t));
+    let any_arch = |a: &ReleaseAsset| !all_tags.iter().any(|t| lower(a).contains(t));
+    let best = |suffix: &str| {
+        assets
+            .iter()
+            .filter(|a| named(a, suffix))
+            .find(|a| for_arch(a))
+            .or_else(|| {
+                assets
+                    .iter()
+                    .filter(|a| named(a, suffix))
+                    .find(|a| any_arch(a))
+            })
+    };
+    match os {
+        "windows" => best("-setup.exe").or_else(|| best(".msi")),
+        "macos" => best(".dmg"),
+        _ => None,
+    }
+}
+
+/// Downloads `asset` into `dir`, reporting `(downloaded, total)` bytes as it
+/// goes, and checks its size and SHA-256 digest. Setting `cancel` stops it.
+/// Returns the file's path.
+pub async fn download_installer(
+    asset: &ReleaseAsset,
+    dir: &Path,
+    progress: impl Fn(u64, u64),
+    cancel: &AtomicBool,
+) -> Result<PathBuf> {
+    let failed = |e: String| Error::Invalid(format!("下载更新失败：{e}"));
+    let name = Path::new(&asset.name)
+        .file_name()
+        .ok_or_else(|| failed("安装包名称无效".into()))?;
+    std::fs::create_dir_all(dir).map_err(|e| failed(e.to_string()))?;
+    let path = dir.join(name);
+    let part = dir.join(format!("{}.part", name.to_string_lossy()));
+    let client = reqwest::Client::builder()
+        .user_agent("AutoPassDoc")
+        .connect_timeout(Duration::from_secs(20))
+        .read_timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| failed(e.to_string()))?;
+    let mut response = client
+        .get(&asset.url)
+        .send()
+        .await
+        .map_err(|e| failed(format!("无法连接 GitHub（{e}）")))?;
+    if !response.status().is_success() {
+        return Err(failed(format!("GitHub 返回 {}", response.status())));
+    }
+    let total = response.content_length().unwrap_or(asset.size);
+    let mut file = std::fs::File::create(&part).map_err(|e| failed(e.to_string()))?;
+    let mut hasher = Sha256::new();
+    let mut done = 0u64;
+    progress(0, total);
+    let outcome = async {
+        loop {
+            if cancel.load(AtomicOrdering::Relaxed) {
+                return Err(Error::Invalid("已取消下载".into()));
+            }
+            let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|e| failed(format!("网络中断（{e}）")))?
+            else {
+                break;
+            };
+            file.write_all(&chunk).map_err(|e| failed(e.to_string()))?;
+            hasher.update(&chunk);
+            done += chunk.len() as u64;
+            progress(done, total);
+        }
+        file.flush().map_err(|e| failed(e.to_string()))?;
+        if asset.size > 0 && done != asset.size {
+            return Err(failed(format!(
+                "文件不完整（{done} / {} 字节）",
+                asset.size
+            )));
+        }
+        if let Some(expected) = asset
+            .digest
+            .as_deref()
+            .and_then(|d| d.trim().strip_prefix("sha256:"))
+        {
+            let actual: String = hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            if !actual.eq_ignore_ascii_case(expected) {
+                return Err(failed("校验和不匹配，文件可能已损坏".into()));
+            }
+        }
+        Ok(())
+    }
+    .await;
+    drop(file);
+    if let Err(e) = outcome {
+        let _ = std::fs::remove_file(&part);
+        return Err(e);
+    }
+    let _ = std::fs::remove_file(&path);
+    std::fs::rename(&part, &path).map_err(|e| failed(e.to_string()))?;
+    Ok(path)
+}
+
+/// Starts the downloaded installer so it replaces this copy of the app; the
+/// caller quits right after. Windows runs the NSIS installer in passive mode
+/// (progress only) and restarts the app when done, or `msiexec /passive`.
+/// macOS waits for this process (`pid`) to exit, copies the app out of the
+/// disk image over the running bundle and reopens it; when that is not
+/// possible it opens the disk image in Finder instead.
+pub fn launch_installer(installer: &Path, pid: u32) -> Result<()> {
+    let failed = |e: String| Error::Invalid(format!("无法启动安装程序：{e}"));
+    let lower = installer.to_string_lossy().to_ascii_lowercase();
+    if cfg!(windows) {
+        let mut command = if lower.ends_with(".msi") {
+            let mut c = std::process::Command::new("msiexec");
+            c.arg("/i").arg(installer).arg("/passive");
+            c
+        } else {
+            let mut c = std::process::Command::new(installer);
+            c.args(["/P", "/R", "/UPDATE"]);
+            c
+        };
+        command.spawn().map_err(|e| failed(e.to_string()))?;
+        Ok(())
+    } else if cfg!(target_os = "macos") && lower.ends_with(".dmg") {
+        // …/AutoPassDoc.app/Contents/MacOS/<binary> → …/AutoPassDoc.app
+        let bundle = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.ancestors().nth(3).map(Path::to_path_buf))
+            .filter(|p| p.extension().is_some_and(|e| e == "app"))
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(MAC_INSTALL_SCRIPT)
+            .arg("sh")
+            .arg(pid.to_string())
+            .arg(installer)
+            .arg(bundle)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| failed(e.to_string()))?;
+        Ok(())
+    } else {
+        Err(failed("当前系统不支持自动安装，请前往发布页下载".into()))
+    }
+}
+
+/// `$1` pid to wait for, `$2` the .dmg, `$3` the running .app bundle (empty
+/// when not running from one).
+const MAC_INSTALL_SCRIPT: &str = r#"
+PID="$1"; DMG="$2"; APP="$3"
+while kill -0 "$PID" 2>/dev/null; do sleep 0.3; done
+if [ -n "$APP" ]; then
+  MNT=$(mktemp -d "${TMPDIR:-/tmp}/autopassdoc-update.XXXXXX")
+  if hdiutil attach -nobrowse -noautoopen -quiet -mountpoint "$MNT" "$DMG"; then
+    SRC=$(ls -d "$MNT"/*.app 2>/dev/null | head -n 1)
+    OLD="$APP.old-$$"
+    if [ -n "$SRC" ] && mv "$APP" "$OLD"; then
+      if ditto "$SRC" "$APP"; then
+        rm -rf "$OLD"
+        hdiutil detach -quiet "$MNT"
+        xattr -dr com.apple.quarantine "$APP" 2>/dev/null
+        open "$APP"
+        exit 0
+      fi
+      rm -rf "$APP"
+      mv "$OLD" "$APP"
+    fi
+    hdiutil detach -quiet "$MNT"
+  fi
+fi
+open "$DMG"
+"#;
 
 /// Compares versions like `1.2.3`, `v1.2`, `1.2.3-beta.2` (semantic
 /// versioning precedence; build metadata after `+` is ignored, missing
@@ -288,6 +504,93 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().starts_with("检查更新失败"), "{err}");
+    }
+
+    fn asset(name: &str) -> ReleaseAsset {
+        ReleaseAsset {
+            name: name.into(),
+            url: format!("https://example.com/{name}"),
+            size: 1,
+            digest: None,
+        }
+    }
+
+    #[test]
+    fn picks_the_installer_for_this_platform() {
+        let assets = [
+            asset("AutoPassDoc_0.2.0_aarch64.dmg"),
+            asset("AutoPassDoc_0.2.0_x64_en-US.msi"),
+            asset("AutoPassDoc_0.2.0_x64-setup.exe"),
+        ];
+        let name = |os, arch| pick_installer(&assets, os, arch).map(|a| a.name.as_str());
+        assert_eq!(
+            name("windows", "x86_64"),
+            Some("AutoPassDoc_0.2.0_x64-setup.exe")
+        );
+        assert_eq!(
+            name("macos", "aarch64"),
+            Some("AutoPassDoc_0.2.0_aarch64.dmg")
+        );
+        assert_eq!(name("macos", "x86_64"), None);
+        assert_eq!(name("windows", "aarch64"), None);
+        assert_eq!(name("linux", "x86_64"), None);
+        let msi_only = [asset("AutoPassDoc_0.2.0_x64_en-US.msi")];
+        assert_eq!(
+            pick_installer(&msi_only, "windows", "x86_64").map(|a| a.name.as_str()),
+            Some("AutoPassDoc_0.2.0_x64_en-US.msi")
+        );
+        let universal = [asset("AutoPassDoc_0.3.0_universal.dmg")];
+        assert!(pick_installer(&universal, "macos", "x86_64").is_some());
+    }
+
+    #[tokio::test]
+    async fn downloads_and_verifies_the_installer() {
+        let body = b"installer bytes".to_vec();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/setup.exe"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let digest: String = Sha256::digest(&body)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let mut good = ReleaseAsset {
+            name: "setup.exe".into(),
+            url: format!("{}/setup.exe", server.uri()),
+            size: body.len() as u64,
+            digest: Some(format!("sha256:{digest}")),
+        };
+        let seen = std::cell::Cell::new(0);
+        let cancel = AtomicBool::new(false);
+        let path = download_installer(
+            &good,
+            dir.path(),
+            |d, t| {
+                assert_eq!(t, body.len() as u64);
+                seen.set(d);
+            },
+            &cancel,
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), body);
+        assert_eq!(seen.get(), body.len() as u64);
+
+        good.digest = Some(format!("sha256:{}", "0".repeat(64)));
+        let err = download_installer(&good, dir.path(), |_, _| {}, &cancel)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("校验和"), "{err}");
+        assert!(!dir.path().join("setup.exe.part").exists());
+
+        cancel.store(true, AtomicOrdering::Relaxed);
+        let err = download_installer(&good, dir.path(), |_, _| {}, &cancel)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("取消"), "{err}");
     }
 
     async fn server_status(status: u16) -> MockServer {
