@@ -687,7 +687,10 @@ async fn gateway_empty_content_500_retries_with_more_tokens_and_thinking_off() {
     assert!(sent[0].get("reasoning_effort").is_none());
     assert_eq!(sent[1]["thinking"], json!({ "type": "disabled" }));
     assert_eq!(sent[1]["reasoning"], json!({ "enabled": false }));
-    assert_eq!(sent[1]["max_tokens"], json!(req.profile.max_output_tokens.max(4096)));
+    assert_eq!(
+        sent[1]["max_tokens"],
+        json!(req.profile.max_output_tokens.max(4096))
+    );
 }
 
 #[tokio::test]
