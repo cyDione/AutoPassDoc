@@ -155,7 +155,7 @@ async fn falls_back_to_the_whitelist_and_downloads_attachments() {
     );
     let report = core.web_download_to_kb(&file.url).await.unwrap();
     assert!(report.error.is_none(), "{report:?}");
-    assert_eq!(report.file_name, "办法.md");
+    assert_eq!(report.file_name, "管理办法全文.md");
     let docs = core.kb_documents().unwrap();
     assert_eq!(docs.len(), 1);
     assert_eq!(docs[0].title, "政务信息化项目管理办法");

@@ -205,6 +205,14 @@ pub fn extract_metadata<S: AsRef<str>>(lines: &[S]) -> DocMeta {
     }
 }
 
+/// The red letterhead of an official document ("上海市人民政府文件"), which
+/// is not its title.
+pub fn is_letterhead(title: &str) -> bool {
+    let norm = normalize(title.trim());
+    let len = norm.chars().count();
+    len <= 30 && (norm.ends_with("文件") || !find_doc_numbers(&norm).is_empty())
+}
+
 /// Header lines that are not the title: red header, 文号, date, 份号, 密级.
 fn is_header_noise(l: &Line) -> bool {
     const MARKS: &[&str] = &[

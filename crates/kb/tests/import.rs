@@ -577,3 +577,41 @@ fn reopening_keeps_everything() {
     assert_eq!(kb.documents().unwrap()[0].id, id);
     assert!(!kb.search(&query("公共数据")).unwrap().is_empty());
 }
+
+#[test]
+fn a_letterhead_heading_is_not_the_title_and_hash_names_get_the_title() {
+    let dir = tempfile::tempdir().unwrap();
+    // MinerU turns the red letterhead into the first heading.
+    let md = SAMPLE.replacen("某某市人民政府文件", "# 某某市人民政府文件", 1);
+    let path = write(dir.path(), "15016b289b274acede3c83f797599f19 (2).md", &md);
+    let mut kb = kb_in(dir.path());
+    let report = kb.import_file(&path).unwrap();
+    let doc = kb.document(report.doc_id).unwrap().unwrap();
+    assert_eq!(
+        doc.title,
+        "某某市人民政府关于印发《某某市公共数据管理办法》的通知"
+    );
+
+    // Documents from earlier versions: letterhead title, hash file name.
+    drop(kb);
+    let db = rusqlite::Connection::open(dir.path().join("kb").join("kb.sqlite")).unwrap();
+    db.execute(
+        "UPDATE documents SET title = '某某市人民政府文件' WHERE id = ?1",
+        [report.doc_id],
+    )
+    .unwrap();
+    drop(db);
+    let mut kb = kb_in(dir.path());
+    assert_eq!(kb.repair_titles().unwrap(), 1);
+    let doc = kb.document(report.doc_id).unwrap().unwrap();
+    assert_eq!(
+        doc.title,
+        "某某市人民政府关于印发《某某市公共数据管理办法》的通知"
+    );
+    assert_eq!(
+        doc.file_name,
+        "某某市人民政府关于印发《某某市公共数据管理办法》的通知.md"
+    );
+    assert!(!kb.search(&query("公共数据管理办法")).unwrap().is_empty());
+    assert_eq!(kb.repair_titles().unwrap(), 0);
+}

@@ -108,7 +108,10 @@ impl Core {
     pub(crate) fn kb(&self) -> Result<MutexGuard<'_, Option<KnowledgeBase>>> {
         let mut guard = self.kb.lock().unwrap();
         if guard.is_none() {
-            *guard = Some(KnowledgeBase::open(&self.data_dir().join("kb"))?);
+            let mut kb = KnowledgeBase::open(&self.data_dir().join("kb"))?;
+            // Letterhead titles and hash file names from earlier versions.
+            let _ = kb.repair_titles();
+            *guard = Some(kb);
         }
         Ok(guard)
     }

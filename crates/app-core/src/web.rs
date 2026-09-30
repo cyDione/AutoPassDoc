@@ -154,6 +154,9 @@ pub struct WebResult {
     pub trusted: bool,
     /// Why the AI thinks it answers the need.
     pub reason: Option<String>,
+    /// What to call the file when it is downloaded: the document's title.
+    #[serde(skip)]
+    pub doc_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -195,12 +198,16 @@ pub struct LookupRequest {
     pub passage: Option<String>,
 }
 
+/// A link shown to the user: (file type the link named, document title).
+type Seen = (Option<String>, Option<String>);
+
 /// HTTP client and what the searches have seen.
 pub struct WebState {
     http: reqwest::Client,
     /// Only links shown to the user may be downloaded.
     /// With the file type the link named, for downloads without an extension.
-    seen: Mutex<HashMap<String, Option<String>>>,
+    /// and the document's title to name the download after.
+    seen: Mutex<HashMap<String, Seen>>,
     /// Disallowed path prefixes per host, from robots.txt.
     robots: Mutex<HashMap<String, Vec<String>>>,
     /// Search engine addresses; tests point them at a mock server.
@@ -284,7 +291,23 @@ fn typed_result(title: &str, url: Url, snippet: &str, known: Option<String>) -> 
         url: url.to_string(),
         trusted: false,
         reason: None,
+        doc_name: None,
     }
+}
+
+/// Whether a link text names the document rather than the file or the act
+/// ("hff2616b.pdf", "下载", "附件1", "PDF版").
+fn names_document(text: &str) -> bool {
+    let mut t = text.trim().to_string();
+    for w in [
+        "下载", "点击", "查看", "原文", "全文", "附件", "打印", "文件",
+    ] {
+        t = t.replace(w, "");
+    }
+    t.chars()
+        .filter(|c| ('\u{4e00}'..='\u{9fff}').contains(c))
+        .count()
+        >= 4
 }
 
 fn http_url(s: &str) -> Option<Url> {
@@ -919,7 +942,15 @@ impl Core {
             .seen
             .lock()
             .unwrap()
-            .extend(results.iter().map(|r| (r.url.clone(), r.file_type.clone())));
+            .extend(results.iter().map(|r| {
+                // A file found as a result is named after its own title
+                // unless that is just the file name.
+                let name = r.doc_name.clone().or_else(|| {
+                    (r.kind == ResultKind::File && names_document(&r.title))
+                        .then(|| r.title.clone())
+                });
+                (r.url.clone(), (r.file_type.clone(), name))
+            }));
     }
 
     async fn model_search(&self, query: &str, settings: &WebSettings) -> Result<Vec<WebResult>> {
@@ -1181,6 +1212,11 @@ impl Core {
                 .map(|r| r.title.clone())
                 .unwrap_or_default();
             for (file, text, ext) in attachments(&page, &html) {
+                let doc_name = if names_document(&text) {
+                    Some(text.clone())
+                } else {
+                    (!parent.is_empty()).then(|| parent.clone())
+                };
                 if !file.host_str().is_some_and(|h| allowed(h, whitelist))
                     || seen.contains(file.as_str())
                 {
@@ -1205,6 +1241,7 @@ impl Core {
                     title
                 };
                 let mut r = typed_result(&title, file, &format!("附件，来自：{parent}"), Some(ext));
+                r.doc_name = doc_name;
                 r.trusted = true;
                 results.push(r);
             }
@@ -1410,7 +1447,7 @@ impl Core {
     /// Downloads a file found by [`Core::web_search`] and imports it into the
     /// knowledge base.
     pub async fn web_download_to_kb(&self, url: &str) -> Result<ImportResult> {
-        let Some(hint) = self.web.seen.lock().unwrap().get(url).cloned() else {
+        let Some((hint, title)) = self.web.seen.lock().unwrap().get(url).cloned() else {
             return Err(Error::Invalid("只能下载搜索结果中的文件".into()));
         };
         let parsed = http_url(url).ok_or_else(|| Error::Invalid("链接无效".into()))?;
@@ -1424,6 +1461,25 @@ impl Core {
                 .is_some_and(|(_, e)| IMPORTABLE.contains(&e.to_ascii_lowercase().as_str()))
         {
             name = format!("{name}.{ext}");
+        }
+        // Servers often name files by a hash; the document's title says what it is.
+        if let Some(title) = title {
+            let ext = name
+                .rsplit_once('.')
+                .map(|(_, e)| e.to_string())
+                .unwrap_or_default();
+            let stem: String = title
+                .chars()
+                .map(|c| {
+                    if c.is_control() || r#"\/:*?"<>|"#.contains(c) {
+                        '_'
+                    } else {
+                        c
+                    }
+                })
+                .take(80)
+                .collect();
+            name = format!("{}.{ext}", stem.trim());
         }
         let ext = name
             .rsplit_once('.')

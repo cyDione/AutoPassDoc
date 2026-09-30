@@ -207,9 +207,12 @@ impl KnowledgeBase {
             .map(|l| l.display.as_deref().unwrap_or(&l.text))
             .collect();
         let mut meta = metadata::extract_metadata(&meta_lines);
-        if parsed.title_hint.is_some() {
-            meta.title = parsed.title_hint;
+        // A heading from the parser wins, unless it is the red letterhead
+        // ("上海市人民政府文件") that tops an official document's first page.
+        if let Some(hint) = parsed.title_hint.filter(|h| !metadata::is_letterhead(h)) {
+            meta.title = Some(hint);
         }
+        meta.title = meta.title.map(|t| book_marks(&t));
 
         let original_path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
         let original = original_path.to_string_lossy().into_owned();
@@ -441,19 +444,42 @@ impl KnowledgeBase {
             issuer: clean(&meta.issuer),
             date: clean(&meta.date).map(|d| normalize_date(&d).unwrap_or(d)),
         };
-        let file_name: String = self
-            .conn
-            .query_row("SELECT file_name FROM documents WHERE id = ?1", [id], |r| {
-                r.get(0)
-            })
-            .optional()?
-            .ok_or(Error::DocumentNotFound(id))?;
-        let doc_tokens = doc_index_text(&meta, &file_name);
+        self.write_metadata(id, &meta, None, true)
+    }
+
+    /// Stores metadata (and optionally a new display file name) and rewrites
+    /// the document's index entries; `edited` marks it as the user's.
+    fn write_metadata(
+        &mut self,
+        id: i64,
+        meta: &DocMeta,
+        rename: Option<&str>,
+        edited: bool,
+    ) -> Result<()> {
+        let file_name: String = match rename {
+            Some(name) => name.to_string(),
+            None => self
+                .conn
+                .query_row("SELECT file_name FROM documents WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
+                .optional()?
+                .ok_or(Error::DocumentNotFound(id))?,
+        };
+        let doc_tokens = doc_index_text(meta, &file_name);
         let tx = self.conn.transaction()?;
         tx.execute(
             "UPDATE documents SET title = ?2, doc_number = ?3, issuer = ?4, date = ?5,
-             meta_edited = 1 WHERE id = ?1",
-            params![id, meta.title, meta.doc_number, meta.issuer, meta.date],
+             file_name = ?6, meta_edited = meta_edited OR ?7 WHERE id = ?1",
+            params![
+                id,
+                meta.title,
+                meta.doc_number,
+                meta.issuer,
+                meta.date,
+                file_name,
+                edited
+            ],
         )?;
         // The FTS table stores no content, so rows are rewritten whole.
         {
@@ -484,6 +510,68 @@ impl KnowledgeBase {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Fixes documents imported before letterheads were told apart from
+    /// titles, and names downloads that kept a server's hash as file name
+    /// after their title. Documents the user corrected are left alone.
+    /// Returns how many were changed.
+    pub fn repair_titles(&mut self) -> Result<usize> {
+        let rows = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, file_name, full_text, title, doc_number, issuer, date
+                 FROM documents WHERE meta_edited = 0",
+            )?;
+            stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    DocMeta {
+                        title: r.get(3)?,
+                        doc_number: r.get(4)?,
+                        issuer: r.get(5)?,
+                        date: r.get(6)?,
+                    },
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut changed = 0;
+        for (id, file_name, full_text, mut meta) in rows {
+            let letterhead = meta
+                .title
+                .as_deref()
+                .is_some_and(|t| metadata::is_letterhead(t) || book_marks(t) != t);
+            let hashed = is_hash_name(&file_name);
+            if !letterhead && !hashed {
+                continue;
+            }
+            if letterhead {
+                let lines: Vec<&str> = full_text
+                    .lines()
+                    .map(|l| l.trim_start_matches('#').trim())
+                    .take(40)
+                    .collect();
+                meta.title = metadata::extract_metadata(&lines)
+                    .title
+                    .filter(|t| !metadata::is_letterhead(t))
+                    .map(|t| book_marks(&t));
+            }
+            let rename = match (&meta.title, hashed) {
+                (Some(title), true) => {
+                    let ext = file_name.rsplit_once('.').map_or("", |(_, e)| e);
+                    Some(format!("{}.{ext}", sanitize_file_name(title)))
+                }
+                _ => None,
+            };
+            if !letterhead && rename.is_none() {
+                continue;
+            }
+            self.write_metadata(id, &meta, rename.as_deref(), false)?;
+            changed += 1;
+        }
+        Ok(changed)
     }
 
     /// Removes a document with its chunks, index entries, embeddings and stored file.
@@ -1049,6 +1137,26 @@ fn doc_index_text(meta: &DocMeta, file_name: &str) -> String {
         meta.doc_number.as_deref(),
     ];
     tokenize::index_text(&fields.into_iter().flatten().collect::<Vec<_>>().join(" "))
+}
+
+/// Chinese book title marks in place of the «» some PDF fonts map them to.
+fn book_marks(title: &str) -> String {
+    if title.contains(['«', '»'])
+        && title
+            .chars()
+            .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
+    {
+        title.replace('«', "《").replace('»', "》")
+    } else {
+        title.to_string()
+    }
+}
+
+/// A file name that is a server's hash ("15016b289b274acede3c83f797599f19 (2).pdf").
+fn is_hash_name(file_name: &str) -> bool {
+    let stem = file_name.rsplit_once('.').map_or(file_name, |(s, _)| s);
+    let stem = stem.split([' ', '(', '（']).next().unwrap_or_default();
+    stem.len() >= 16 && stem.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 fn display_title(title: Option<&str>, file_name: &str) -> String {
