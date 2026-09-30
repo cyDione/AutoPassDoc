@@ -5,6 +5,7 @@ edition = "2024"
 description = "AutoPassDoc application logic: settings, reviewers, AI fixes, knowledge base glue"
 
 [dependencies]
+base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 docx-engine = { path = "../docx-engine" }
 models = { version = "0.1.0", path = "../models" }

@@ -56,6 +56,15 @@ pub enum SearchEngine {
     Baidu,
 }
 
+impl SearchEngine {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Bing => "必应",
+            Self::Baidu => "百度",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct WebSettings {
@@ -161,6 +170,10 @@ impl WebState {
     pub fn new() -> Result<Self> {
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
+            .default_headers(reqwest::header::HeaderMap::from_iter([(
+                reqwest::header::ACCEPT_LANGUAGE,
+                reqwest::header::HeaderValue::from_static("zh-CN,zh;q=0.9,en;q=0.5"),
+            )]))
             .timeout(Duration::from_secs(20))
             .connect_timeout(Duration::from_secs(8))
             .build()
@@ -260,10 +273,12 @@ fn decode_entities(s: &str) -> String {
         .into_owned()
 }
 
-/// Results from a Bing results page.
+/// Results from a Bing results page. Bing wraps most links in its own
+/// `/ck/a?…&u=a1<base64url>` click tracker; those are unwrapped here, since
+/// the tracker's host is never on the whitelist.
 pub fn parse_bing(html: &str) -> Vec<(String, String, String)> {
     static BLOCK: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"(?s)<li class="b_algo"(.*?)</li>"#).unwrap());
+        LazyLock::new(|| Regex::new(r#"(?s)<li class="b_algo\b[^"]*"(.*?)</li>"#).unwrap());
     static LINK: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r#"(?s)<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#).unwrap()
     });
@@ -278,21 +293,68 @@ pub fn parse_bing(html: &str) -> Vec<(String, String, String)> {
                 .captures(block)
                 .map(|s| s[1].to_string())
                 .unwrap_or_default();
-            Some((decode_entities(&link[1]), link[2].to_string(), snippet))
+            let href = decode_entities(&link[1]);
+            let href = unwrap_bing_link(&href).unwrap_or(href);
+            Some((href, link[2].to_string(), snippet))
         })
         .collect()
 }
 
-/// Results from a Baidu results page; links are Baidu redirects.
+/// The target of a Bing `/ck/a` click-tracking link.
+pub fn unwrap_bing_link(href: &str) -> Option<String> {
+    use base64::Engine as _;
+    let url = Url::parse(href).ok()?;
+    if !url.host_str()?.ends_with("bing.com") || url.path() != "/ck/a" {
+        return None;
+    }
+    let (_, u) = url.query_pairs().find(|(k, _)| k == "u")?;
+    let encoded = u.strip_prefix("a1")?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded.trim_end_matches('='))
+        .ok()?;
+    let target = String::from_utf8(bytes).ok()?;
+    http_url(&target).map(|u| u.to_string())
+}
+
+/// Results from a Baidu results page. Each result carries its real address
+/// in `mu`; the title link is a Baidu redirect, used only when `mu` is missing.
 pub fn parse_baidu(html: &str) -> Vec<(String, String, String)> {
-    static LINK: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(
-            r#"(?s)<h3[^>]*class="[^"]*\bt\b[^"]*"[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#,
-        )
-        .unwrap()
+    static START: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"<div[^>]*class="[^"]*\bc-container\b[^"]*"[^>]*>"#).unwrap()
     });
-    LINK.captures_iter(html)
-        .map(|c| (decode_entities(&c[1]), c[2].to_string(), String::new()))
+    static MU: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\bmu="([^"]+)""#).unwrap());
+    static LINK: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?s)<h3[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#).unwrap()
+    });
+    static SNIPPET: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?s)<(?:span|div)[^>]*class="[^"]*(?:content-right|c-abstract|c-span-last)[^"]*"[^>]*>(.*?)</(?:span|div)>"#)
+            .unwrap()
+    });
+    let starts: Vec<_> = START.find_iter(html).collect();
+    starts
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| {
+            let end = starts.get(i + 1).map_or(html.len(), |n| n.start());
+            let block = &html[m.start()..end];
+            let link = LINK.captures(block)?;
+            let real = MU
+                .captures(m.as_str())
+                .map(|c| decode_entities(&c[1]))
+                .filter(|u| {
+                    http_url(u)
+                        .is_some_and(|u| !u.host_str().unwrap_or_default().ends_with("baidu.com"))
+                });
+            let snippet = SNIPPET
+                .captures(block)
+                .map(|s| s[1].to_string())
+                .unwrap_or_default();
+            Some((
+                real.unwrap_or_else(|| decode_entities(&link[1])),
+                link[2].to_string(),
+                snippet,
+            ))
+        })
         .collect()
 }
 
@@ -310,6 +372,20 @@ pub fn attachments(page: &Url, html: &str) -> Vec<(Url, String)> {
                 .then(|| (url, clean_text(&c[2])))
         })
         .collect()
+}
+
+/// Whether `text` (lowercase) mentions the query at all: a whole term, or
+/// for Chinese, which has no spaces between words, any two characters in a
+/// row from a term.
+fn mentions(text: &str, terms: &[String]) -> bool {
+    terms.iter().any(|t| {
+        let chars: Vec<char> = t.chars().collect();
+        text.contains(t.as_str())
+            || (chars.len() > 2
+                && chars
+                    .windows(2)
+                    .any(|w| !w[0].is_ascii() && text.contains(&w.iter().collect::<String>())))
+    })
 }
 
 /// The JSON array in a model answer, tolerating code fences and chatter.
@@ -475,44 +551,69 @@ impl Core {
             .map(|s| format!("site:{s}"))
             .collect::<Vec<_>>()
             .join(" OR ");
-        let q = format!("{query} ({site_filter})");
-        let (bing, baidu) = self.web.bases.lock().unwrap().clone();
-        let (url, found) = match settings.engine {
-            SearchEngine::Bing => {
-                let url = Url::parse_with_params(
-                    &format!("{bing}/search"),
-                    &[("q", q.as_str()), ("ensearch", "0")],
-                )
-                .map_err(|e| Error::Invalid(e.to_string()))?;
-                let html = self.fetch_text(&url, MAX_PAGE_BYTES).await?;
-                (url, parse_bing(&html))
-            }
-            SearchEngine::Baidu => {
-                let url = Url::parse_with_params(
-                    &format!("{baidu}/s"),
-                    &[("wd", q.as_str()), ("rn", "20")],
-                )
-                .map_err(|e| Error::Invalid(e.to_string()))?;
-                let html = self.fetch_text(&url, MAX_PAGE_BYTES).await?;
-                let mut found = parse_baidu(&html);
-                for item in &mut found {
-                    item.0 = self.resolve_redirect(&item.0).await.unwrap_or_default();
-                }
-                (url, found)
-            }
+        let filtered = if sites.len() > 1 {
+            format!("{query} ({site_filter})")
+        } else {
+            format!("{query} {site_filter}")
         };
-        let mut results: Vec<WebResult> = found
-            .into_iter()
-            .filter_map(|(link, title, snippet)| {
-                let u = url
-                    .join(&link)
-                    .ok()
-                    .filter(|u| matches!(u.scheme(), "http" | "https"))?;
-                allowed(u.host_str()?, whitelist).then(|| result(&title, u, &snippet))
-            })
-            .collect();
+        // Search engines often ignore or mishandle a long `site:` group, so
+        // the bare query runs too and its results are held to the whitelist
+        // here. If the chosen engine finds nothing, the other one is tried.
+        let engines = match settings.engine {
+            SearchEngine::Bing => [SearchEngine::Bing, SearchEngine::Baidu],
+            SearchEngine::Baidu => [SearchEngine::Baidu, SearchEngine::Bing],
+        };
+        let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        let mut results: Vec<WebResult> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
-        results.retain(|r| seen.insert(r.url.clone()));
+        for engine in engines {
+            for q in [filtered.as_str(), query] {
+                if results.len() >= MAX_RESULTS / 2 {
+                    break;
+                }
+                let (url, found) = match self.engine_search(engine, q).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        notes.push(format!("{}：{e}", engine.label()));
+                        break;
+                    }
+                };
+                if found.is_empty() {
+                    notes.push(format!(
+                        "{}没有返回可识别的结果（可能要求人机验证）",
+                        engine.label()
+                    ));
+                    break;
+                }
+                let total = found.len();
+                for (link, title, snippet) in found {
+                    let Some(u) = url
+                        .join(&link)
+                        .ok()
+                        .filter(|u| matches!(u.scheme(), "http" | "https"))
+                    else {
+                        continue;
+                    };
+                    // Engines that suspect a bot serve unrelated results.
+                    let text = format!("{title}{snippet}").to_lowercase();
+                    if u.host_str().is_some_and(|h| allowed(h, whitelist))
+                        && mentions(&text, &terms)
+                        && seen.insert(u.to_string())
+                    {
+                        results.push(result(&title, u, &snippet));
+                    }
+                }
+                if results.is_empty() && q == query {
+                    notes.push(format!(
+                        "{}找到 {total} 条结果，但都不在白名单网站中",
+                        engine.label()
+                    ));
+                }
+            }
+            if !results.is_empty() {
+                break;
+            }
+        }
         results.truncate(MAX_RESULTS);
         if results.is_empty() {
             notes.push("白名单网站中没有找到结果".into());
@@ -560,6 +661,57 @@ impl Core {
         Ok(results)
     }
 
+    /// One results page from `engine`: the page address and its
+    /// (link, title, snippet) entries.
+    async fn engine_search(
+        &self,
+        engine: SearchEngine,
+        q: &str,
+    ) -> Result<(Url, Vec<(String, String, String)>)> {
+        let (bing, baidu) = self.web.bases.lock().unwrap().clone();
+        let bad = |e: String| Error::Invalid(e.to_string());
+        match engine {
+            SearchEngine::Bing => {
+                let url = Url::parse_with_params(
+                    &format!("{bing}/search"),
+                    &[("q", q), ("ensearch", "0"), ("setlang", "zh-Hans")],
+                )
+                .map_err(|e| bad(e.to_string()))?;
+                let (html, landed) = self.fetch_page(&url).await?;
+                let mut found = parse_bing(&html);
+                // Outside mainland China cn.bing.com sends searches to the
+                // www.bing.com home page, which has no results.
+                if found.is_empty() && landed.path() != "/search" {
+                    let mut retry = url.clone();
+                    retry
+                        .set_host(Some("www.bing.com"))
+                        .map_err(|e| bad(e.to_string()))?;
+                    retry.query_pairs_mut().append_pair("mkt", "zh-CN");
+                    found = parse_bing(&self.fetch_page(&retry).await?.0);
+                }
+                Ok((url, found))
+            }
+            SearchEngine::Baidu => {
+                let url = Url::parse_with_params(
+                    &format!("{baidu}/s"),
+                    &[("wd", q), ("rn", "20"), ("ie", "utf-8")],
+                )
+                .map_err(|e| bad(e.to_string()))?;
+                let (html, _) = self.fetch_page(&url).await?;
+                let mut found = parse_baidu(&html);
+                for item in &mut found {
+                    let tracked = Url::parse(&item.0)
+                        .ok()
+                        .is_some_and(|u| u.host_str().is_some_and(|h| h.ends_with("baidu.com")));
+                    if tracked && let Some(target) = self.resolve_redirect(&item.0).await {
+                        item.0 = target;
+                    }
+                }
+                Ok((url, found))
+            }
+        }
+    }
+
     /// The redirect target of a search engine's tracking link.
     async fn resolve_redirect(&self, link: &str) -> Option<String> {
         let client = reqwest::Client::builder()
@@ -579,7 +731,7 @@ impl Core {
         &self,
         url: &Url,
         limit: usize,
-    ) -> Result<(Vec<u8>, reqwest::header::HeaderMap)> {
+    ) -> Result<(Vec<u8>, reqwest::header::HeaderMap, Url)> {
         let fail = |e: String| {
             Error::Invalid(format!(
                 "无法访问 {}：{e}",
@@ -592,7 +744,7 @@ impl Core {
             .get(url.clone())
             .send()
             .await
-            .map_err(|e| fail(e.to_string()))?;
+            .map_err(|e| fail(e.without_url().to_string()))?;
         if !response.status().is_success() {
             return Err(fail(format!("HTTP {}", response.status().as_u16())));
         }
@@ -603,18 +755,32 @@ impl Core {
             return Err(fail(format!("文件超过 {} MB", limit >> 20)));
         }
         let headers = response.headers().clone();
+        let landed = response.url().clone();
         let mut body = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|e| fail(e.to_string()))? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| fail(e.without_url().to_string()))?
+        {
             body.extend_from_slice(&chunk);
             if body.len() > limit {
                 return Err(fail(format!("文件超过 {} MB", limit >> 20)));
             }
         }
-        Ok((body, headers))
+        Ok((body, headers, landed))
     }
 
     async fn fetch_text(&self, url: &Url, limit: usize) -> Result<String> {
-        let (bytes, headers) = self.fetch_bytes(url, limit).await?;
+        Ok(self.fetch_text_at(url, limit).await?.0)
+    }
+
+    /// A search results page and the address it ended up at after redirects.
+    async fn fetch_page(&self, url: &Url) -> Result<(String, Url)> {
+        self.fetch_text_at(url, MAX_PAGE_BYTES).await
+    }
+
+    async fn fetch_text_at(&self, url: &Url, limit: usize) -> Result<(String, Url)> {
+        let (bytes, headers, landed) = self.fetch_bytes(url, limit).await?;
         let declared = headers
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
@@ -626,11 +792,12 @@ impl Core {
                 || head.contains(&format!("charset={c}"))
                 || head.contains(&format!("charset=\"{c}"))
         });
-        Ok(if gbk {
+        let text = if gbk {
             encoding_rs::GB18030.decode(&bytes).0.into_owned()
         } else {
             String::from_utf8_lossy(&bytes).into_owned()
-        })
+        };
+        Ok((text, landed))
     }
 
     /// Whether robots.txt lets any crawler fetch `url`; unreachable robots files allow.
@@ -663,7 +830,7 @@ impl Core {
             return Err(Error::Invalid("只能下载搜索结果中的文件".into()));
         }
         let parsed = http_url(url).ok_or_else(|| Error::Invalid("链接无效".into()))?;
-        let (bytes, headers) = self.fetch_bytes(&parsed, MAX_DOWNLOAD_BYTES).await?;
+        let (bytes, headers, _) = self.fetch_bytes(&parsed, MAX_DOWNLOAD_BYTES).await?;
         let name = download_name(&parsed, &headers, &bytes);
         let ext = name
             .rsplit_once('.')
@@ -824,6 +991,36 @@ mod tests {
             "https://tjj.sh.gov.cn/tjgb/files/%E5%85%AC%E6%8A%A5.PDF"
         );
         assert_eq!(file_type(&links[0].0).as_deref(), Some("pdf"));
+    }
+
+    #[test]
+    fn unwraps_bing_click_tracking_links() {
+        // Markup as Bing served it in 2026-09: every result link goes through /ck/a.
+        let html = r#"<li class="b_algo b_vtl_deeplinks" data-id iid=SERP.5384><h2 class=""><a target="_blank" href="https://www.bing.com/ck/a?!&amp;&amp;p=218c&amp;ptn=3&amp;ver=2&amp;hsh=4&amp;u=a1aHR0cHM6Ly93d3cuc2hhbmdoYWkuZ292LmNuL25ldy9hLmh0bWw_eD0x&amp;ntb=1" h="ID=SERP,5132.2">美丽上海</a></h2><p>十五五</p></li>"#;
+        let found = parse_bing(html);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, "https://www.shanghai.gov.cn/new/a.html?x=1");
+        assert_eq!(unwrap_bing_link("https://www.gov.cn/a.html"), None);
+    }
+
+    #[test]
+    fn reads_real_addresses_from_baidu_results() {
+        let html = r#"<div class="result c-container xpath-log new-pmd" srcid="1599" id="1" tpl="se_com_default" mu="https://sthj.sh.gov.cn/a/b.html"><h3 class="c-title t t tts-title"><a href="http://www.baidu.com/link?url=abc" target="_blank"><em>美丽上海</em>建设</a></h3><span class="content-right_1THTn">摘要</span></div>
+            <div class="result c-container new-pmd" id="2"><h3 class="t"><a href="http://www.baidu.com/link?url=def">第二条</a></h3></div>"#;
+        let found = parse_baidu(html);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].0, "https://sthj.sh.gov.cn/a/b.html");
+        assert_eq!(clean_text(&found[0].1), "美丽上海建设");
+        assert_eq!(clean_text(&found[0].2), "摘要");
+        assert_eq!(found[1].0, "http://www.baidu.com/link?url=def");
+    }
+
+    #[test]
+    fn drops_results_that_do_not_mention_the_query() {
+        let terms = vec!["美丽上海".to_string(), "十五五".to_string()];
+        assert!(mentions("上海市“十五五”生态环境保护规划", &terms));
+        assert!(mentions("美丽上海建设三年行动计划", &terms));
+        assert!(!mentions("job opportunities - beijing", &terms));
     }
 
     #[test]
