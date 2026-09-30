@@ -273,6 +273,12 @@ export interface Settings {
   };
   web: WebSettings;
   kb: KbSettings;
+  proofread: {
+    /** Parallel model requests while proofreading. */
+    concurrency: number;
+    /** Let the chat model think; slower. */
+    thinking: boolean;
+  };
 }
 
 /** Who reads PDFs and images into the knowledge base. */
@@ -632,4 +638,8 @@ export interface ProofProgress {
   stage: "rules" | "model" | "consistency" | "citations" | "done";
   done: number;
   total: number;
+  /** Findings of the step that just finished; the final report supersedes them. */
+  found?: ProofIssue[];
+  /** Text of each paragraph in `found`. */
+  paragraphs?: Record<number, string>;
 }

@@ -70,6 +70,7 @@ export function seedSettings(): Settings {
       concurrency: 3,
       profileEvery: 10,
     },
+    proofread: { concurrency: 6, thinking: false },
     web: { mode: "auto", modelSearch: null, engine: "bing", whitelist: [...DEFAULT_WHITELIST], service: "none" },
     kb: { parser: "builtin", mineruModel: "vlm", paddleocrBaseUrl: "https://paddleocr.aistudio-app.com", paddleocrModel: "PaddleOCR-VL-1.6" },
   };

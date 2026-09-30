@@ -111,13 +111,13 @@ pub const CHECK_SYSTEM: &str = "你是一名严谨的中文公文和工程咨询
 - reason 用一句话说明错在哪里。
 - 不要改动风格、不要润色、不要改标点和空格（另有规则检查）。
 
-同时抽取段落中的“指标事实”（用于检查全文前后是否一致）：总投资、建设规模、面积、长度、工期、日期、数量等有明确数值的说法。
-- subject：说的是谁（如“项目”“一期工程”“污水处理厂”），metric：指标名（如“总投资”“占地面积”“建设工期”），value：数值（阿拉伯数字），unit：单位，text：原文中包含该数值的最短片段（逐字摘录）。
+同时抽取“关键指标”（用于检查全文前后是否一致）：只要项目或其组成部分的总投资、分项投资、建设规模、占地面积、建筑面积、长度、处理能力、建设工期、开竣工日期这类会在全文多处出现的指标。不要抽取单价、明细数量、序号、页码、年份、标准编号和一般统计数据。
+- 每条写成数组 [段号, \"主体\", \"指标名\", \"数值\", \"单位\"]：主体如“项目”“一期工程”“污水处理厂”，指标名如“总投资”“占地面积”，数值用阿拉伯数字。
 
-只输出一个 JSON 对象：
+只输出一个 JSON 对象，不要解释：
 {\"issues\": [{\"p\": 段号, \"original\": \"原文片段\", \"suggestion\": \"改正后片段\", \"category\": \"typo\", \"reason\": \"理由\"}],
- \"facts\": [{\"p\": 段号, \"subject\": \"项目\", \"metric\": \"总投资\", \"value\": \"3.2\", \"unit\": \"亿元\", \"text\": \"总投资约3.2亿元\"}]}
-没有问题时 issues 为空数组；不需要抽取指标时 facts 为空数组。";
+ \"facts\": [[段号, \"项目\", \"总投资\", \"3.2\", \"亿元\"]]}
+没有问题时 issues 为空数组；没有关键指标或不需要抽取时 facts 为空数组。";
 
 /// The user message for one section: project facts, then numbered
 /// paragraphs.
@@ -201,6 +201,14 @@ pub fn parse_check(text: &str, paras: &[&ProofParagraph]) -> Option<(Vec<Issue>,
     }
     let mut facts = Vec::new();
     for item in items(&v, "facts") {
+        // Compact form: [p, subject, metric, value, unit].
+        let item = match item {
+            Value::Array(a) => {
+                let keys = ["p", "subject", "metric", "value", "unit"];
+                Value::Object(keys.iter().map(|k| k.to_string()).zip(a).collect())
+            }
+            other => other,
+        };
         let Some(para) = find(&item) else { continue };
         let (Some(metric), Some(value)) = (
             str_field(&item, &["metric", "指标"]),
@@ -216,10 +224,17 @@ pub fn parse_check(text: &str, paras: &[&ProofParagraph]) -> Option<(Vec<Issue>,
             .unwrap_or("")
             .to_string();
         let quoted = str_field(&item, &["text", "original"]).unwrap_or("");
-        let text = [quoted.to_string(), format!("{value}{unit}"), value.clone()]
-            .into_iter()
-            .find(|t| !t.is_empty() && para.text.contains(t.as_str()))
-            .unwrap_or_default();
+        let text = [
+            quoted.to_string(),
+            format!("{metric}{value}{unit}"),
+            format!("{metric}约{value}{unit}"),
+            format!("{metric}为{value}{unit}"),
+            format!("{value}{unit}"),
+            value.clone(),
+        ]
+        .into_iter()
+        .find(|t| !t.is_empty() && para.text.contains(t.as_str()))
+        .unwrap_or_default();
         facts.push(Fact {
             paragraph: para.index,
             subject: str_field(&item, &["subject", "主体"])
@@ -766,7 +781,15 @@ mod tests {
         assert_eq!(facts.len(), 2);
         assert_eq!(facts[0].text, "总投资约3.2亿元");
         assert_eq!(facts[1].value, "24");
-        assert_eq!(facts[1].text, "24个月", "falls back to value + unit");
+        assert_eq!(
+            facts[1].text, "建设工期24个月",
+            "falls back to metric + value + unit"
+        );
+        // The compact form the prompt asks for.
+        let (_, facts) =
+            parse_check(r#"{"facts": [[3, "项目", "总投资", 3.2, "亿元"]]}"#, &paras).unwrap();
+        assert_eq!(facts[0].text, "总投资约3.2亿元");
+        assert_eq!(facts[0].subject, "项目");
         assert!(parse_check("没有 JSON", &paras).is_none());
         // A bare array is accepted as the issue list.
         let (issues, _) = parse_check(

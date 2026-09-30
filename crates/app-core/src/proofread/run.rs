@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::StreamExt;
-use models::{ChatRequest, Message};
+use models::{ChatRequest, Message, ThinkingLevel};
 use serde::{Deserialize, Serialize};
 
 use super::model::{self, CitationLookup, CitationStatus, Fact};
@@ -30,7 +30,7 @@ const CACHE_DAYS: i64 = 90;
 /// Citation statuses are reused for this long; documents get repealed.
 const CITATION_CACHE_DAYS: i64 = 7;
 /// Bump when prompts or the cached shape change.
-const CACHE_VERSION: &str = "v1";
+const CACHE_VERSION: &str = "v2";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -69,12 +69,27 @@ pub enum ProofStage {
     Done,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProofProgress {
     pub stage: ProofStage,
     pub done: usize,
     pub total: usize,
+    /// Findings of the step that just finished, so they can be shown while
+    /// the rest runs. The final report supersedes them (merged, sorted).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub found: Vec<Issue>,
+}
+
+impl ProofProgress {
+    fn step(stage: ProofStage, done: usize, total: usize) -> Self {
+        Self {
+            stage,
+            done,
+            total,
+            found: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -134,6 +149,9 @@ impl Core {
         );
         req.profile = chat.profile.clone();
         req.thinking = chat.thinking;
+        if !self.settings()?.proofread.thinking {
+            req.thinking = Some(ThinkingLevel::Off);
+        }
         req.json_output = true;
         req.temperature = Some(0.1);
         req.max_tokens = Some(chat.profile.max_output_tokens.clamp(1024, 8192));
@@ -170,12 +188,16 @@ impl Core {
             .clone()
             .unwrap_or_else(|| extract_facts(paras));
 
-        progress(ProofProgress {
-            stage: ProofStage::Rules,
-            done: 0,
-            total: 1,
-        });
+        progress(ProofProgress::step(ProofStage::Rules, 0, 1));
         let mut issues = check_rules(input, &facts, &categories);
+        progress(ProofProgress {
+            found: issues
+                .iter()
+                .filter(|i| wants(i.category))
+                .cloned()
+                .collect(),
+            ..ProofProgress::step(ProofStage::Rules, 1, 1)
+        });
         let citations = extract_citations(paras);
         let mut report = ProofReport {
             facts: facts.clone(),
@@ -201,7 +223,7 @@ impl Core {
         let check_citations = wants(Category::Citation) && lookup.is_some();
         if options.use_model && (!model_checks.is_empty() || check_citations) {
             let chat = self.require(RoleName::Chat)?;
-            let concurrency = self.settings()?.fix.concurrency.max(1);
+            let concurrency = self.settings()?.proofread.concurrency.max(1);
             if !model_checks.is_empty() {
                 let facts_found = self
                     .proof_sections(
@@ -257,11 +279,7 @@ impl Core {
             }
         }
         report.cancelled = cancel.load(Ordering::Relaxed);
-        progress(ProofProgress {
-            stage: ProofStage::Done,
-            done: 1,
-            total: 1,
-        });
+        progress(ProofProgress::step(ProofStage::Done, 1, 1));
         Ok(report)
     }
 
@@ -312,6 +330,7 @@ impl Core {
         )?;
 
         let mut found_facts = Vec::new();
+        let mut found_issues = Vec::new();
         let mut todo = Vec::new();
         let total = sections.len();
         report.sections = total;
@@ -329,7 +348,7 @@ impl Core {
                 let Ok(c) = serde_json::from_str::<Cached>(&cached[&para_hash(p)]) else {
                     continue;
                 };
-                issues.extend(c.issues.into_iter().map(|mut x| {
+                found_issues.extend(c.issues.into_iter().map(|mut x| {
                     x.paragraph = p.index;
                     x
                 }));
@@ -340,11 +359,18 @@ impl Core {
             }
         }
         let mut done = report.cached_sections;
+        let shown = |found: &[Issue]| -> Vec<Issue> {
+            found
+                .iter()
+                .filter(|i| checks.contains(&i.category))
+                .cloned()
+                .collect()
+        };
         progress(ProofProgress {
-            stage: ProofStage::Model,
-            done,
-            total,
+            found: shown(&found_issues),
+            ..ProofProgress::step(ProofStage::Model, done, total)
         });
+        issues.append(&mut found_issues);
 
         let mut stream = futures::stream::iter(todo)
             .map(|section| async move {
@@ -361,26 +387,25 @@ impl Core {
             let Some(answer) = answer else { continue };
             report.model_calls += 1;
             done += 1;
-            progress(ProofProgress {
-                stage: ProofStage::Model,
-                done,
-                total,
-            });
             let parsed = match answer {
-                Ok(text) => model::parse_check(&text, &members),
+                Ok(text) => model::parse_check(&text, &members)
+                    .ok_or_else(|| "模型没有返回校对 JSON".to_string()),
+                Err(e) => Err(e.to_string()),
+            };
+            let (new_issues, new_facts) = match parsed {
+                Ok(found) => found,
                 Err(e) => {
                     report
                         .failures
                         .push(format!("{}：{e}", range_label(&members)));
+                    progress(ProofProgress::step(ProofStage::Model, done, total));
                     continue;
                 }
             };
-            let Some((new_issues, new_facts)) = parsed else {
-                report
-                    .failures
-                    .push(format!("{}：模型没有返回校对 JSON", range_label(&members)));
-                continue;
-            };
+            progress(ProofProgress {
+                found: shown(&new_issues),
+                ..ProofProgress::step(ProofStage::Model, done, total)
+            });
             let mut per: HashMap<usize, Cached> = HashMap::new();
             for x in &new_issues {
                 per.entry(x.paragraph).or_default().issues.push(x.clone());
@@ -421,11 +446,7 @@ impl Core {
         if groups.is_empty() {
             return Ok(());
         }
-        progress(ProofProgress {
-            stage: ProofStage::Consistency,
-            done: 0,
-            total: 1,
-        });
+        progress(ProofProgress::step(ProofStage::Consistency, 0, 1));
         let user = model::confirm_prompt(&groups, paras);
         let key = hash(&[&user]);
         let checks = format!("{CACHE_VERSION}|confirm");
@@ -458,11 +479,7 @@ impl Core {
         for (i, reason) in model::parse_confirm(&answer, groups.len()) {
             issues.extend(model::conflict_issues(&groups[i], &reason, paras));
         }
-        progress(ProofProgress {
-            stage: ProofStage::Consistency,
-            done: 1,
-            total: 1,
-        });
+        progress(ProofProgress::step(ProofStage::Consistency, 1, 1));
         Ok(())
     }
 
@@ -522,11 +539,7 @@ impl Core {
                 None => pending.push((i, report.citations[i].citation.clone())),
             }
         }
-        progress(ProofProgress {
-            stage: ProofStage::Citations,
-            done,
-            total,
-        });
+        progress(ProofProgress::step(ProofStage::Citations, done, total));
         let mut stream = futures::stream::iter(pending)
             .map(|(i, citation)| async move {
                 if cancel.load(Ordering::Relaxed) {
@@ -552,11 +565,7 @@ impl Core {
             let Some(result) = result else { continue };
             report.model_calls += 1;
             done += 1;
-            progress(ProofProgress {
-                stage: ProofStage::Citations,
-                done,
-                total,
-            });
+            progress(ProofProgress::step(ProofStage::Citations, done, total));
             match result {
                 Ok(st) => {
                     self.store().save_proofread_cache(

@@ -86,6 +86,27 @@ pub struct Settings {
     pub fix: FixSettings,
     pub web: WebSettings,
     pub kb: KbSettings,
+    pub proofread: ProofreadSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ProofreadSettings {
+    /// Parallel model requests while proofreading.
+    pub concurrency: usize,
+    /// Let the chat model think before answering. Off by default: finding
+    /// typos gains little from it and it makes every section several times
+    /// slower.
+    pub thinking: bool,
+}
+
+impl Default for ProofreadSettings {
+    fn default() -> Self {
+        Self {
+            concurrency: 6,
+            thinking: false,
+        }
+    }
 }
 
 /// Who reads PDFs and images into the knowledge base.
@@ -175,6 +196,7 @@ impl Settings {
         fix.kb_passages = fix.kb_passages.clamp(1, 20);
         fix.concurrency = fix.concurrency.clamp(1, 8);
         fix.profile_every = fix.profile_every.clamp(1, 200);
+        self.proofread.concurrency = self.proofread.concurrency.clamp(1, 16);
         let mut seen = std::collections::HashSet::new();
         self.web.whitelist = self
             .web

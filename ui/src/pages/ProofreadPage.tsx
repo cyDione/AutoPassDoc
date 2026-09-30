@@ -111,8 +111,9 @@ function IssueRow({
   text: string | undefined;
   state: State;
   busy: boolean;
-  onApply: () => void;
-  onIgnore: () => void;
+  /** Omit to show the finding without apply and ignore (while the run is going). */
+  onApply?: () => void;
+  onIgnore?: () => void;
   onJump: () => void;
 }) {
   return (
@@ -127,18 +128,22 @@ function IssueRow({
             <button type="button" className="btn sm ghost" title="在文档中定位" onClick={onJump}>
               <Crosshair size={13} /> 定位
             </button>
-            <button type="button" className="btn sm ghost" onClick={onIgnore}>
-              <EyeOff size={13} /> 忽略
-            </button>
-            <button
-              type="button"
-              className="btn sm primary"
-              disabled={busy || issue.suggestion === null}
-              title={issue.suggestion === null ? "这一条需要你判断后手动修改" : "写入文档（按设置作为修订或直接修改）"}
-              onClick={onApply}
-            >
-              <Check size={13} /> 应用
-            </button>
+            {onIgnore && (
+              <button type="button" className="btn sm ghost" onClick={onIgnore}>
+                <EyeOff size={13} /> 忽略
+              </button>
+            )}
+            {onApply && (
+              <button
+                type="button"
+                className="btn sm primary"
+                disabled={busy || issue.suggestion === null}
+                title={issue.suggestion === null ? "这一条需要你判断后手动修改" : "写入文档（按设置作为修订或直接修改）"}
+                onClick={onApply}
+              >
+                <Check size={13} /> 应用
+              </button>
+            )}
           </>
         ) : (
           <span className="muted">{state === "applied" ? "已应用" : "已忽略"}</span>
@@ -220,7 +225,7 @@ function Strategy() {
         <ol>
           <li>规则先行：格式、序号、地名和引用清单由本机规则检查，快速且不花费额度。</li>
           <li>识别项目信息：从标题、封面和正文提取项目名称、所在省市区、建设单位，作为“张冠李戴”的比对基准。</li>
-          <li>逐节通读：大语言模型按章节（约 3000 字一段）检查错别字、用词和与项目信息不符的表述；每条发现必须原文引用，否则丢弃。</li>
+          <li>逐节通读：大语言模型按章节（约 3000 字一段）多节同时检查错别字、用词和与项目信息不符的表述，边查边显示；每条发现必须原文引用，否则丢弃。并发数和是否深度思考在设置 › AI 修复中调整。</li>
           <li>前后比对：抽取全文中的金额、数量、日期等数据，本机比对后再由模型确认是否真的矛盾。</li>
           <li>引用时效：对《》中的法律、标准和政策文件联网核查，已废止或被替代的给出现行版本，可一键查找并下载到知识库。</li>
           <li>增量复查：未改动的段落沿用上次结果，修改后再次校对只检查变化的章节。</li>
@@ -236,6 +241,8 @@ export const ProofreadPage = memo(function ProofreadPage({ backend, doc, section
   const [range, setRange] = useState<Range>("all");
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<ProofProgress | null>(null);
+  // Findings shown while a run is going.
+  const [live, setLive] = useState<{ issues: ProofIssue[]; texts: Record<number, string> }>({ issues: [], texts: {} });
   const [report, setReport] = useState<ProofReport | null>(null);
   const [issues, setIssues] = useState<ProofIssue[]>([]);
   const [states, setStates] = useState<ReadonlyMap<string, State>>(() => new Map());
@@ -255,7 +262,21 @@ export const ProofreadPage = memo(function ProofreadPage({ backend, doc, section
     setError(null);
   }, [docId]);
 
-  useEffect(() => backend.onProofreadProgress((p) => p.docId === docId && setProgress(p)), [backend, docId]);
+  useEffect(
+    () =>
+      backend.onProofreadProgress((p) => {
+        if (p.docId !== docId) return;
+        setProgress(p);
+        const found = p.found ?? [];
+        if (found.length > 0)
+          setLive((prev) => {
+            const seen = new Set(prev.issues.map((i) => i.id));
+            const issues = [...prev.issues, ...found.filter((i) => !seen.has(i.id))].sort((a, b) => a.paragraph - b.paragraph || a.start - b.start);
+            return { issues, texts: { ...prev.texts, ...p.paragraphs } };
+          });
+      }),
+    [backend, docId],
+  );
 
   const hasModel = !!settings?.roles.chat.model;
   const run = async () => {
@@ -263,6 +284,7 @@ export const ProofreadPage = memo(function ProofreadPage({ backend, doc, section
     setRunning(true);
     setError(null);
     setProgress(null);
+    setLive({ issues: [], texts: {} });
     try {
       const r = await backend.proofread(
         docId,
@@ -279,6 +301,7 @@ export const ProofreadPage = memo(function ProofreadPage({ backend, doc, section
     } finally {
       setRunning(false);
       setProgress(null);
+      setLive({ issues: [], texts: {} });
     }
   };
 
@@ -411,6 +434,7 @@ export const ProofreadPage = memo(function ProofreadPage({ backend, doc, section
                   {progress.done} / {progress.total}
                 </span>
               )}
+              {live.issues.length > 0 && <span className="muted">· 已发现 {live.issues.length} 条，全部完成后可应用</span>}
             </div>
             <div className="progress">
               <span style={{ width: `${progress && progress.total ? (progress.done / progress.total) * 100 : 5}%` }} />
@@ -426,7 +450,26 @@ export const ProofreadPage = memo(function ProofreadPage({ backend, doc, section
 
         {facts && <FactsCard facts={facts} onChange={setFacts} />}
 
-        {report && (
+        {running && live.issues.length > 0 && (
+          <section className="card proof-issues">
+            <div className="section-head">
+              <h3>问题</h3>
+              <span className="muted">校对中，已发现 {live.issues.length} 条</span>
+            </div>
+            {live.issues.map((i) => (
+              <IssueRow
+                key={i.id}
+                issue={i}
+                text={live.texts[i.paragraph]}
+                state="open"
+                busy
+                onJump={() => onJump(i.paragraph)}
+              />
+            ))}
+          </section>
+        )}
+
+        {report && !(running && live.issues.length > 0) && (
           <section className="card proof-issues">
             <div className="section-head">
               <h3>问题</h3>

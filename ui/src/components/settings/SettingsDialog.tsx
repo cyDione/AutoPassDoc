@@ -152,7 +152,14 @@ export function SettingsDialog({ backend, initialTab, theme, onTheme, layout, on
               />
             )}
             {tab === "general" && <GeneralTab theme={theme} onTheme={onTheme} layout={layout} onLayout={onLayout} />}
-            {ready && tab === "fix" && <FixTab fix={draft.fix} onChange={(fix) => setDraft({ ...draft, fix })} />}
+            {ready && tab === "fix" && (
+              <FixTab
+                fix={draft.fix}
+                onChange={(fix) => setDraft({ ...draft, fix })}
+                proofread={draft.proofread}
+                onProofreadChange={(proofread) => setDraft({ ...draft, proofread })}
+              />
+            )}
             {ready && tab === "web" && <WebTab backend={backend} web={draft.web} onChange={(web) => setDraft({ ...draft, web })} />}
             {ready && tab === "kb" && <KbTab backend={backend} kb={draft.kb} onChange={(kb) => setDraft({ ...draft, kb })} />}
             {tab === "data" && <DataTab backend={backend} />}

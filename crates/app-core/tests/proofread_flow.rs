@@ -45,7 +45,7 @@ fn core(dir: &std::path::Path, server: &MockServer, with_chat: bool) -> Core {
             model: "cline-pass/deepseek-v4.1-flash".into(),
             thinking: "off".into(),
         };
-        s.fix.concurrency = 2;
+        s.proofread.concurrency = 2;
         store.save_settings(&s).unwrap();
         drop(store);
         core.secrets()
@@ -131,7 +131,7 @@ async fn mount(server: &MockServer) {
         .respond_with(chat_reply(json!({
             "issues": [],
             "facts": [
-                {"p": 6, "subject": "项目", "metric": "总投资", "value": "3.5", "unit": "亿元", "text": "总投资3.5亿元"}
+                [6, "项目", "总投资", 3.5, "亿元"]
             ]
         })))
         .mount(server)
@@ -248,6 +248,15 @@ async fn proofreads_with_rules_model_and_citations() {
     assert!(seen.contains(&ProofStage::Consistency));
     assert!(seen.contains(&ProofStage::Citations));
     assert_eq!(seen.last(), Some(&ProofStage::Done));
+    // Findings arrive while the run is going: rules first, then each section.
+    let streamed: Vec<(ProofStage, String)> = stages
+        .lock()
+        .unwrap()
+        .iter()
+        .flat_map(|p| p.found.iter().map(move |i| (p.stage, i.original.clone())))
+        .collect();
+    assert!(streamed.contains(&(ProofStage::Model, "水环竟".to_string())));
+    assert!(streamed.iter().any(|(s, _)| *s == ProofStage::Rules));
 
     // Applying the typo fix to the paragraph text.
     let fixed = proofread::apply_issue(&doc.paragraphs[4].text, typo[0]).unwrap();

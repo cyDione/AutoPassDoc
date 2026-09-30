@@ -20,10 +20,12 @@ static CANCEL: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Progress {
+struct Progress<'a> {
     doc_id: u64,
     #[serde(flatten)]
     progress: ProofProgress,
+    /// Text of each paragraph with a finding in `progress.found`.
+    paragraphs: BTreeMap<usize, &'a str>,
 }
 
 #[derive(Serialize)]
@@ -68,18 +70,36 @@ pub async fn proofread(
         None
     };
     CANCEL.store(false, Ordering::SeqCst);
+    let texts: std::collections::HashMap<usize, &str> = input
+        .paragraphs
+        .iter()
+        .map(|p| (p.index, p.text.as_str()))
+        .collect();
     let report = core
         .proofread(
             &input,
             &options,
             lookup,
             |progress| {
-                let _ = app.emit("proofread-progress", Progress { doc_id, progress });
+                let paragraphs = progress
+                    .found
+                    .iter()
+                    .filter_map(|i| Some((i.paragraph, *texts.get(&i.paragraph)?)))
+                    .collect();
+                let _ = app.emit(
+                    "proofread-progress",
+                    Progress {
+                        doc_id,
+                        progress,
+                        paragraphs,
+                    },
+                );
             },
             &CANCEL,
         )
         .await
         .map_err(err)?;
+    drop(texts);
     let wanted: std::collections::HashSet<usize> =
         report.issues.iter().map(|i| i.paragraph).collect();
     let paragraphs = input

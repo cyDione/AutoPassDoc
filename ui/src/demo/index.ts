@@ -21,6 +21,7 @@ import type {
   ParserInfo,
   ParserKind,
   PreReviewItem,
+  ProofIssue,
   ProofProgress,
   ProbeResult,
   Reviewer,
@@ -884,14 +885,22 @@ export function createDemoBackend(): Backend {
         if (p) paragraphs.push([i, paragraphText(p)]);
       }
       proofCancel = false;
-      const emit = (stage: ProofProgress["stage"], done: number, total: number) => proofListeners.forEach((h) => h({ docId, stage, done, total }));
+      const emit = (stage: ProofProgress["stage"], done: number, total: number, found: ProofIssue[] = []) =>
+        proofListeners.forEach((h) =>
+          h({ docId, stage, done, total, found, paragraphs: Object.fromEntries(found.map((i) => [i.paragraph, paragraphs.find(([n]) => n === i.paragraph)?.[1] ?? ""])) }),
+        );
       emit("rules", 0, 1);
       await delay(300);
       const sections = options.useModel ? Math.min(8, Math.ceil(paragraphs.length / 12)) : 0;
       if (options.useModel && !settings.roles.chat.model) throw new Error("请先在设置 › 模型分配中选择大语言模型，或关闭“使用大语言模型”只做规则检查");
+      // Findings appear section by section, as the real backend reports them.
+      const all = demoProofread(paragraphs, options).issues;
+      emit("rules", 1, 1, all.filter((i) => i.source === "rule"));
+      const byModel = all.filter((i) => i.source === "model");
       for (let i = 0; i < sections && !proofCancel; i++) {
-        emit("model", i, sections);
         await delay(250);
+        const per = Math.ceil(byModel.length / sections);
+        emit("model", i + 1, sections, byModel.slice(i * per, (i + 1) * per));
       }
       if (options.categories.includes("citation")) {
         emit("citations", 0, 2);
