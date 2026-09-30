@@ -184,6 +184,8 @@ export interface Backend {
   webSearch(request: WebLookup): Promise<WebSearchOutcome>;
   /** Downloads a file from the last search results and imports it into the knowledge base. */
   webDownloadToKb(url: string): Promise<KbImportReport>;
+  /** Saves a whitelisted result page's own text into the knowledge base as Markdown. */
+  webSavePageToKb(url: string): Promise<KbImportReport>;
   /** Search APIs (智谱 / 博查 / Tavily) and whether each has a key. */
   searchServices(): Promise<SearchServiceInfo[]>;
   setSearchKey(kind: SearchService, key: string): Promise<SearchServiceInfo[]>;
@@ -372,6 +374,7 @@ async function tauriBackend(): Promise<Backend> {
     appInfo: () => invoke("app_info"),
     checkUpdate: () => invoke("check_update"),
     webSearch: (request) => invoke("web_search", { request }),
+    webSavePageToKb: (url) => invoke("web_save_page_to_kb", { url }),
     searchServices: () => invoke("search_services"),
     setSearchKey: (kind, key) => invoke("set_search_key", { kind, key }),
     clearSearchKey: (kind) => invoke("clear_search_key", { kind }),

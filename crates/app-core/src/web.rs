@@ -199,7 +199,8 @@ pub struct LookupRequest {
 pub struct WebState {
     http: reqwest::Client,
     /// Only links shown to the user may be downloaded.
-    seen: Mutex<HashSet<String>>,
+    /// With the file type the link named, for downloads without an extension.
+    seen: Mutex<HashMap<String, Option<String>>>,
     /// Disallowed path prefixes per host, from robots.txt.
     robots: Mutex<HashMap<String, Vec<String>>>,
     /// Search engine addresses; tests point them at a mock server.
@@ -250,8 +251,23 @@ fn file_type(url: &Url) -> Option<String> {
     FILE_TYPES.contains(&ext).then(|| ext.to_string())
 }
 
+/// The file type a link text such as "附件：办法.pdf" names.
+fn named_type(text: &str) -> Option<String> {
+    let lower = text
+        .trim()
+        .trim_end_matches(['）', ')'])
+        .to_ascii_lowercase();
+    let ext = lower.rsplit_once('.')?.1;
+    FILE_TYPES.contains(&ext).then(|| ext.to_string())
+}
+
 fn result(title: &str, url: Url, snippet: &str) -> WebResult {
-    let file_type = file_type(&url);
+    typed_result(title, url, snippet, None)
+}
+
+/// A result whose file type is known from the link rather than the address.
+fn typed_result(title: &str, url: Url, snippet: &str, known: Option<String>) -> WebResult {
+    let file_type = file_type(&url).or(known);
     WebResult {
         title: clean_text(title),
         site: url.host_str().unwrap_or_default().to_string(),
@@ -422,7 +438,11 @@ pub fn parse_baidu(html: &str) -> Vec<(String, String, String)> {
 }
 
 /// Attachment links on a page: (absolute url, link text).
-pub fn attachments(page: &Url, html: &str) -> Vec<(Url, String)> {
+/// Attachment links on a page: (absolute url, link text, file type). A link
+/// counts when its address ends in a file extension, or when its text or
+/// `title` names a file (download buttons that go through a script such as
+/// `download.jsp?id=…`).
+pub fn attachments(page: &Url, html: &str) -> Vec<(Url, String, String)> {
     static A: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r#"(?is)<a\s([^>]*?)href\s*=\s*["']([^"']+)["']([^>]*)>(.*?)</a>"#).unwrap()
     });
@@ -431,18 +451,32 @@ pub fn attachments(page: &Url, html: &str) -> Vec<(Url, String)> {
     let mut seen = HashSet::new();
     A.captures_iter(html)
         .filter_map(|c| {
-            let url = page.join(decode_entities(&c[2]).trim()).ok()?;
-            file_type(&url)?;
+            let href = decode_entities(&c[2]);
+            if href
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("javascript:")
+            {
+                return None;
+            }
+            let url = page.join(href.trim()).ok()?;
+            if !matches!(url.scheme(), "http" | "https") {
+                return None;
+            }
             // Icon links carry their name only in `title`.
+            let attrs = format!("{} {}", &c[1], &c[3]);
+            let title = TITLE
+                .captures(&attrs)
+                .map(|t| clean_text(&t[1]))
+                .unwrap_or_default();
             let mut text = clean_text(&c[4]);
             if text.is_empty() {
-                let attrs = format!("{} {}", &c[1], &c[3]);
-                text = TITLE
-                    .captures(&attrs)
-                    .map(|t| clean_text(&t[1]))
-                    .unwrap_or_default();
+                text = title.clone();
             }
-            seen.insert(url.to_string()).then_some((url, text))
+            let ext = file_type(&url)
+                .or_else(|| named_type(&text))
+                .or_else(|| named_type(&title))?;
+            seen.insert(url.to_string()).then_some((url, text, ext))
         })
         .collect()
 }
@@ -885,7 +919,7 @@ impl Core {
             .seen
             .lock()
             .unwrap()
-            .extend(results.iter().map(|r| r.url.clone()));
+            .extend(results.iter().map(|r| (r.url.clone(), r.file_type.clone())));
     }
 
     async fn model_search(&self, query: &str, settings: &WebSettings) -> Result<Vec<WebResult>> {
@@ -1146,7 +1180,7 @@ impl Core {
                 .find(|r| r.url == page.as_str())
                 .map(|r| r.title.clone())
                 .unwrap_or_default();
-            for (file, text) in attachments(&page, &html) {
+            for (file, text, ext) in attachments(&page, &html) {
                 if !file.host_str().is_some_and(|h| allowed(h, whitelist))
                     || seen.contains(file.as_str())
                 {
@@ -1163,7 +1197,6 @@ impl Core {
                     text
                 };
                 // A bare file name says less than the page it came from.
-                let ext = file_type(&file).unwrap_or_default();
                 let title = if !parent.is_empty()
                     && title.to_ascii_lowercase().ends_with(&format!(".{ext}"))
                 {
@@ -1171,7 +1204,7 @@ impl Core {
                 } else {
                     title
                 };
-                let mut r = result(&title, file, &format!("附件，来自：{parent}"));
+                let mut r = typed_result(&title, file, &format!("附件，来自：{parent}"), Some(ext));
                 r.trusted = true;
                 results.push(r);
             }
@@ -1377,12 +1410,21 @@ impl Core {
     /// Downloads a file found by [`Core::web_search`] and imports it into the
     /// knowledge base.
     pub async fn web_download_to_kb(&self, url: &str) -> Result<ImportResult> {
-        if !self.web.seen.lock().unwrap().contains(url) {
+        let Some(hint) = self.web.seen.lock().unwrap().get(url).cloned() else {
             return Err(Error::Invalid("只能下载搜索结果中的文件".into()));
-        }
+        };
         let parsed = http_url(url).ok_or_else(|| Error::Invalid("链接无效".into()))?;
         let (bytes, headers, _) = self.fetch_bytes(&parsed, MAX_DOWNLOAD_BYTES).await?;
-        let name = download_name(&parsed, &headers, &bytes);
+        let mut name = download_name(&parsed, &headers, &bytes);
+        // Script downloads often answer with a name that has no extension.
+        if let Some(ext) = hint
+            && !name.to_ascii_lowercase().ends_with(&format!(".{ext}"))
+            && !name
+                .rsplit_once('.')
+                .is_some_and(|(_, e)| IMPORTABLE.contains(&e.to_ascii_lowercase().as_str()))
+        {
+            name = format!("{name}.{ext}");
+        }
         let ext = name
             .rsplit_once('.')
             .map(|(_, e)| e.to_ascii_lowercase())
@@ -1403,6 +1445,96 @@ impl Core {
             .pop()
             .ok_or_else(|| Error::Invalid("导入失败".into()))
     }
+}
+
+impl Core {
+    /// Saves a whitelisted result page's own text into the knowledge base as
+    /// Markdown, for articles with no file to download (or only a
+    /// print-to-PDF button, which prints this same text).
+    pub async fn web_save_page_to_kb(&self, url: &str) -> Result<ImportResult> {
+        if !self.web.seen.lock().unwrap().contains_key(url) {
+            return Err(Error::Invalid("只能保存搜索结果中的网页".into()));
+        }
+        let parsed = http_url(url).ok_or_else(|| Error::Invalid("链接无效".into()))?;
+        let whitelist = self.web_settings()?.whitelist;
+        if !parsed.host_str().is_some_and(|h| allowed(h, &whitelist)) {
+            return Err(Error::Invalid("只能保存白名单网站的网页正文".into()));
+        }
+        let html = self.fetch_text(&parsed, MAX_PAGE_BYTES).await?;
+        let (title, body) = article(&html);
+        if body.chars().count() < 50 {
+            return Err(Error::Invalid(
+                "这个网页没有可保存的正文，可能要在浏览器中打开后另存".into(),
+            ));
+        }
+        let title = if title.is_empty() {
+            parsed.host_str().unwrap_or("网页").to_string()
+        } else {
+            title
+        };
+        let markdown = format!(
+            "# {title}\n\n来源：{url}\n保存日期：{}\n\n{body}\n",
+            chrono::Local::now().format("%Y-%m-%d")
+        );
+        let file: String = title
+            .chars()
+            .map(|c| {
+                if c.is_control() || r#"\/:*?"<>|"#.contains(c) {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .take(80)
+            .collect();
+        let dir = self.data_dir().join("downloads");
+        std::fs::create_dir_all(&dir)?;
+        let path = unique_path(dir.join(format!("{}.md", file.trim())));
+        std::fs::write(&path, markdown)?;
+        let mut reports = self
+            .kb_import(std::slice::from_ref(&path), |_, _, _| {})
+            .await;
+        reports
+            .pop()
+            .ok_or_else(|| Error::Invalid("导入失败".into()))
+    }
+}
+
+/// A page's title and body text in paragraphs, without navigation, headers
+/// and footers.
+pub fn article(html: &str) -> (String, String) {
+    static TITLE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?is)<title[^>]*>(.*?)</title>").unwrap());
+    static H1: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<h1[^>]*>(.*?)</h1>").unwrap());
+    static NOISE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?is)<(script|style|noscript|svg|head|nav|header|footer|form|select|button)\b.*?</(script|style|noscript|svg|head|nav|header|footer|form|select|button)>")
+            .unwrap()
+    });
+    static BREAK: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)<br\s*/?>|</(p|div|li|tr|h[1-6]|table|section|article)>").unwrap()
+    });
+    let title = H1
+        .captures(html)
+        .map(|c| clean_text(&c[1]))
+        .filter(|t| !t.is_empty())
+        .or_else(|| TITLE.captures(html).map(|c| clean_text(&c[1])))
+        .unwrap_or_default();
+    let stripped = NOISE.replace_all(html, " ");
+    let broken = BREAK.replace_all(&stripped, "\n");
+    let mut lines: Vec<String> = Vec::new();
+    for line in broken.split('\n') {
+        let line = clean_text(line);
+        if line.is_empty() || lines.last() == Some(&line) {
+            continue;
+        }
+        lines.push(line);
+    }
+    // Menus survive as runs of very short lines; keep from the title on.
+    let start = lines
+        .iter()
+        .position(|l| !title.is_empty() && l.contains(&title))
+        .map_or(0, |i| i + 1);
+    (title, lines[start.min(lines.len())..].join("\n\n"))
 }
 
 /// Disallowed prefixes for `User-agent: *`.
@@ -1608,6 +1740,30 @@ mod tests {
             r#"<a class="download0301" href="/cmsres/70/x.pdf" title="hff2616b.pdf" target="_blank"><i></i></a>"#,
         );
         assert_eq!(links[0].1, "hff2616b.pdf");
+    }
+
+    #[test]
+    fn finds_download_buttons_and_article_text() {
+        let page = Url::parse("https://www.example.gov.cn/art/1.html").unwrap();
+        let links = attachments(
+            &page,
+            r#"<a href="/download.jsp?id=9">附件：管理办法.docx</a> <a href="javascript:window.print()">打印</a> <a href="/other.jsp">其他</a>"#,
+        );
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            links[0].0.as_str(),
+            "https://www.example.gov.cn/download.jsp?id=9"
+        );
+        assert_eq!(links[0].2, "docx");
+
+        let (title, body) = article(
+            r#"<html><head><title>站点</title></head><body><nav><a>首页</a></nav><div>面包屑</div><h1>关于印发办法的通知</h1><p>第一条 为了规范管理，制定本办法。</p><p>第二条 本办法自发布之日起施行。</p><footer>版权所有</footer></body></html>"#,
+        );
+        assert_eq!(title, "关于印发办法的通知");
+        assert_eq!(
+            body,
+            "第一条 为了规范管理，制定本办法。\n\n第二条 本办法自发布之日起施行。"
+        );
     }
 
     #[test]

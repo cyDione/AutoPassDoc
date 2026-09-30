@@ -1077,6 +1077,11 @@ export function createDemoBackend(): Backend {
         ],
       };
     },
+    async webSavePageToKb(url) {
+      const name = `${decodeURIComponent(url.split("/").pop() ?? "网页").replace(/\.html?$/, "")}.md`;
+      const [report] = await importFiles([name]);
+      return report;
+    },
     async webDownloadToKb(url) {
       const name = decodeURIComponent(url.split("/").pop() ?? "下载的资料.pdf");
       const [report] = await importFiles([name]);

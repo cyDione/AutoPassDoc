@@ -134,6 +134,7 @@ pub fn run() {
             proofread::clear_proofread_cache,
             knowledge::web_search,
             knowledge::web_download_to_kb,
+            knowledge::web_save_page_to_kb,
             knowledge::kb_count_import,
             knowledge::kb_document_view,
             knowledge::parser_infos,

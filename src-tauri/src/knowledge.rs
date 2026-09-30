@@ -140,6 +140,23 @@ pub async fn web_download_to_kb(
 ) -> Res<ImportResult> {
     let core = core.inner().clone();
     let report = core.web_download_to_kb(&url).await.map_err(err)?;
+    Ok(embed_new(app, core, report))
+}
+
+/// Saves a whitelisted result page's text into the knowledge base.
+#[tauri::command]
+pub async fn web_save_page_to_kb(
+    url: String,
+    app: AppHandle,
+    core: CoreState<'_>,
+) -> Res<ImportResult> {
+    let core = core.inner().clone();
+    let report = core.web_save_page_to_kb(&url).await.map_err(err)?;
+    Ok(embed_new(app, core, report))
+}
+
+/// Starts embedding a newly imported document when an embedding model is set.
+fn embed_new(app: AppHandle, core: Arc<Core>, report: ImportResult) -> ImportResult {
     if report.doc_id.is_some()
         && !report.unchanged
         && core
@@ -150,7 +167,7 @@ pub async fn web_download_to_kb(
     {
         embed_later(app, core);
     }
-    Ok(report)
+    report
 }
 
 #[tauri::command]
