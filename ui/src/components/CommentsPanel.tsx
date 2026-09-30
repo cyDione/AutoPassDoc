@@ -5,7 +5,7 @@ import type { Backend } from "../api";
 import type { CommentLayout } from "../hooks/useCommentLayout";
 import type { Notify, RunEdit } from "../hooks/useDocumentSession";
 import { useFixes } from "../hooks/useFixes";
-import type { AuthorView, CommentView, FixSelection } from "../types";
+import type { AuthorView, CommentView, FixSelection, FixSource } from "../types";
 import { avatarColor, avatarText, errorMessage, hasPlaceholder } from "../util";
 import { AuthorPopover } from "./AuthorPopover";
 import { CommentCard, type CardActions } from "./CommentCard";
@@ -33,7 +33,7 @@ interface Props {
   onAuthors: (authors: AuthorView[]) => void;
   onOpenSettings: () => void;
   /** Opens the web search for what a "【待补充…】" in a comment's fix asks for. */
-  onSearch: (comment: CommentView, need: string, passage: string) => void;
+  onSearch: (comment: CommentView, need: string, passage: string, use: (sources: FixSource[]) => void) => void;
   notify: Notify;
   /** `margin`: cards are drawn in the document's page margin instead of this panel (C-4). */
   layout: CommentLayout;
@@ -159,14 +159,15 @@ export const CommentsPanel = memo(function CommentsPanel({
             return false;
           },
         ),
-      search: onSearch,
+      search: (c, need, passage) => onSearch(c, need, passage, (sources) => void fix(c.id, { sources })),
       toggleDone: (c) =>
         void edit(() => backend.setCommentDone(docId, c.id, !c.done)).catch((e) => notify(`操作失败：${errorMessage(e)}`, true)),
       openAuthor: (name, anchor) => {
         const author = authorsByName.get(name);
         if (author) setPopover((p) => (p?.anchor === anchor ? null : { author, anchor }));
       },
-      openCitation: (path) => void backend.openPath(path).catch((e) => notify(`无法打开文件：${errorMessage(e)}`, true)),
+      openCitation: (target) =>
+        void (/^https?:\/\//.test(target) ? backend.openUrl(target) : backend.openPath(target)).catch((e) => notify(`无法打开：${errorMessage(e)}`, true)),
     }),
     [onSelect, fix, setDirection, apply, reject, edit, backend, docId, notify, authorsByName, onSearch],
   );

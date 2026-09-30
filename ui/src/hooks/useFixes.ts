@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Backend } from "../api";
-import type { FixMode, FixProposal, FixSelection, FixStage } from "../types";
+import type { FixMode, FixProposal, FixSelection, FixSource, FixStage } from "../types";
 import { errorMessage, hasPlaceholder } from "../util";
 import type { Notify, RunEdit } from "./useDocumentSession";
 
@@ -32,6 +32,8 @@ function withEntry(map: FixEntries, id: string, entry: FixEntry | null): FixEntr
 export interface FixOptions {
   selection?: FixSelection | null;
   mode?: FixMode;
+  /** Found material to use from now on, added to what earlier runs were given. */
+  sources?: FixSource[];
 }
 
 export interface FixActions {
@@ -52,6 +54,7 @@ export function useFixes(backend: Backend, docId: number, edit: RunEdit, notify:
   const timers = useRef(new Set<number>());
   const selections = useRef(new Map<string, FixSelection>());
   const modes = useRef(new Map<string, FixMode>());
+  const sources = useRef(new Map<string, FixSource[]>());
   /** Revision direction per comment; state so the boxes re-render, a ref so runs read the latest text. */
   const [directions, setDirections] = useState<ReadonlyMap<string, string>>(() => new Map());
   const directionsRef = useRef(directions);
@@ -108,12 +111,18 @@ export function useFixes(backend: Backend, docId: number, edit: RunEdit, notify:
       if (selection) selections.current.set(commentId, selection);
       else if (selection === null) selections.current.delete(commentId);
       if (mode) modes.current.set(commentId, mode);
+      if (options.sources?.length) {
+        const kept = sources.current.get(commentId) ?? [];
+        const fresh = options.sources.filter((s) => !kept.some((k) => k.url === s.url && k.text === s.text));
+        sources.current.set(commentId, [...kept, ...fresh].slice(-8));
+      }
       setEntries((prev) => withEntry(prev, commentId, { kind: "running", stage: null }));
       try {
         const request = {
           selection: selections.current.get(commentId) ?? null,
           mode: modes.current.get(commentId) ?? "fix",
           direction: directionsRef.current.get(commentId)?.trim() || null,
+          sources: sources.current.get(commentId) ?? null,
         };
         ready(commentId, await backend.fixComment(docId, commentId, request));
       } catch (e) {

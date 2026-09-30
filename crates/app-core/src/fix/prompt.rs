@@ -2,8 +2,9 @@
 //!
 //! Required parts (instructions, comment, paragraphs) always go in; the
 //! optional parts are added in priority order while they fit the budget:
-//! reviewer profile, neighbouring paragraphs, knowledge-base passages, then
-//! the reviewer's past accepted fixes.
+//! reviewer profile, neighbouring paragraphs, related content from other
+//! sections of the document, reference passages (knowledge base and web
+//! pages), then the reviewer's past accepted fixes.
 
 use super::context::{FixInput, FixMode};
 
@@ -14,6 +15,8 @@ pub struct Passage {
     pub title: String,
     pub heading_path: Vec<String>,
     pub text: String,
+    /// Web address of a page found online.
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +39,7 @@ pub struct PromptInput<'a> {
 pub struct Included {
     pub profile: bool,
     pub neighbours: bool,
+    pub related: usize,
     pub passages: usize,
     pub examples: usize,
 }
@@ -43,14 +47,17 @@ pub struct Included {
 pub const SYSTEM: &str = "你是资深的党政机关公文和项目报告修改专家。用户会给你一条审稿专家的批注，以及批注所在的段落。你的任务是按批注意见修改这些段落，让报告更容易通过评审。
 
 修改规则：
-1. 只改批注指出的问题，其余文字保持原样，改动越小越好；不要顺手润色无关句子。
+1. 只改批注指出的问题，其余文字保持原样，改动越小越好；不要顺手润色无关句子（第 9 条除外）。
 2. 输入几段就输出几段，顺序一致；不得合并、拆分、增加或删除段落。
 3. 形如 ⟦图⟧、⟦注1⟧、⟦公式⟧ 的占位符代表图片、脚注和公式，必须原样保留在原来的位置。
-4. 不得编造数据、文号、政策文件名称或事实。批注要求补充而原文和参考资料都没有依据的内容，用“【待补充：需要补充什么】”标出。
+4. 不得编造数据、文号、政策文件名称或事实。需要补充的内容按来源区分：
+   - 项目自身的情况（本项目的测算方法、参数取值、投资、工程量、实施安排等）只从“本文其他章节的相关内容”和原文中取，照录并与之保持一致；找不到的用“【待补充：需编制单位提供……】”标出，不要从参考资料里套用别的项目的数据。
+   - 政策、规划、法规、标准等公开资料只从参考资料中取；参考资料里没有的用“【待补充：……】”标出。
 5. 用到参考资料时，在 citations 中列出资料编号；没用到就给空数组。
 6. 语言符合公文规范：准确、简明、庄重，用语规范，数字、单位、标点符合国家标准。
 7. 如果提供了审稿人画像和以往示例，按该审稿人的关注点和偏好来改。
-8. 如果给出了“用户给出的修改方向”，按修改方向改，它与第 1 条冲突时以修改方向为准；但仍须遵守第 2、3、4 条。
+8. 如果给出了“用户给出的修改方向”，按修改方向改，它与第 1 条冲突时以修改方向为准；但仍须遵守第 2、3、4 条。修改方向明确要求加入的内容，必须根据参考资料写出来并列出编号，参考资料里确实没有时才标【待补充】。
+9. 新增的内容放在意思相符的位置：说明依据的话紧跟它所说明的数据或结论，政策背景放在相关论述的开头或结尾，不要接在不相干的句子后面。段落里同一句话重复出现的，删去多余的一处。
 
 只输出一个 JSON 对象，不要输出其他文字：
 {\"paragraphs\": [\"修改后的第1段\", \"修改后的第2段\"], \"explanation\": \"一两句话说明改了什么、为什么\", \"citations\": [1]}";
@@ -58,13 +65,16 @@ pub const SYSTEM: &str = "你是资深的党政机关公文和项目报告修改
 pub const REWRITE_SYSTEM: &str = "你是资深的党政机关公文和项目报告修改专家。用户认为下面这些段落的原文本身就有问题（事实、逻辑、表述或结构不对），需要重写，而不只是按批注做小改。你的任务是结合批注、修改方向和上下文，把这些段落重写成正确、完整、符合公文规范的文字。
 
 重写规则：
-1. 可以调整句子结构、顺序和表述，删去错误或多余的内容，不必拘泥于原文措辞。
+1. 可以调整句子结构、顺序和表述，删去错误、重复或多余的内容，不必拘泥于原文措辞。
 2. 输入几段就输出几段，顺序一致；不得合并、拆分、增加或删除段落。
 3. 形如 ⟦图⟧、⟦注1⟧、⟦公式⟧ 的占位符代表图片、脚注和公式，必须原样保留。
-4. 不得编造数据、文号、政策文件名称或事实。需要而原文和参考资料都没有依据的内容，用“【待补充：需要补充什么】”标出。
+4. 不得编造数据、文号、政策文件名称或事实。需要补充的内容按来源区分：
+   - 项目自身的情况（本项目的测算方法、参数取值、投资、工程量、实施安排等）只从“本文其他章节的相关内容”和原文中取，照录并与之保持一致；找不到的用“【待补充：需编制单位提供……】”标出，不要从参考资料里套用别的项目的数据。
+   - 政策、规划、法规、标准等公开资料只从参考资料中取；参考资料里没有的用“【待补充：……】”标出。
 5. 用到参考资料时，在 citations 中列出资料编号；没用到就给空数组。
 6. 语言符合公文规范：准确、简明、庄重，用语规范，数字、单位、标点符合国家标准。
-7. 如果给出了“用户给出的修改方向”，以修改方向为准；但仍须遵守第 2、3、4 条。
+7. 如果给出了“用户给出的修改方向”，以修改方向为准；但仍须遵守第 2、3、4 条。修改方向明确要求加入的内容，必须根据参考资料写出来并列出编号，参考资料里确实没有时才标【待补充】。
+8. 新增的内容放在意思相符的位置：说明依据的话紧跟它所说明的数据或结论，政策背景放在相关论述的开头或结尾，不要接在不相干的句子后面。
 
 只输出一个 JSON 对象，不要输出其他文字：
 {\"paragraphs\": [\"重写后的第1段\", \"重写后的第2段\"], \"explanation\": \"一两句话说明重写了什么、为什么\", \"citations\": [1]}";
@@ -182,6 +192,21 @@ pub fn build(p: &PromptInput<'_>, budget: usize) -> (String, Included) {
         }
     }
 
+    let mut related = String::new();
+    for r in &input.related {
+        let place = if r.heading_path.is_empty() {
+            String::new()
+        } else {
+            format!("（{}）", r.heading_path.join(" > "))
+        };
+        let entry = format!("{place}{}\n", r.text.trim());
+        if !fits(&entry, &mut used) {
+            break;
+        }
+        related.push_str(&entry);
+        included.related += 1;
+    }
+
     let mut sources = String::new();
     for passage in p.passages {
         let place = if passage.heading_path.is_empty() {
@@ -189,8 +214,13 @@ pub fn build(p: &PromptInput<'_>, budget: usize) -> (String, Included) {
         } else {
             format!(" {}", passage.heading_path.join(" > "))
         };
+        let from = passage
+            .url
+            .as_deref()
+            .map(|u| format!("（网页：{u}）"))
+            .unwrap_or_default();
         let entry = format!(
-            "[{}] 《{}》{place}\n{}\n",
+            "[{}] 《{}》{place}{from}\n{}\n",
             passage.n,
             passage.title,
             passage.text.trim()
@@ -224,6 +254,12 @@ pub fn build(p: &PromptInput<'_>, budget: usize) -> (String, Included) {
     message.push_str(&before);
     message.push_str(&target);
     message.push_str(&after);
+    if !related.is_empty() {
+        message.push_str(&section(
+            "本文其他章节的相关内容（项目自身的数据和方法以这里为准）",
+            &related,
+        ));
+    }
     if !sources.is_empty() {
         message.push_str(&section("参考资料（引用时写编号）", &sources));
     }
@@ -260,6 +296,8 @@ mod tests {
             after: vec!["下一段。".into()],
             mode: FixMode::Fix,
             direction: None,
+            related: vec![],
+            sources: vec![],
         }
     }
 
@@ -272,6 +310,7 @@ mod tests {
                 title: format!("文件{n}"),
                 heading_path: vec!["第三章".into()],
                 text: "资料".repeat(200),
+                url: None,
             })
             .collect();
         let examples = vec![Example {
@@ -292,6 +331,7 @@ mod tests {
             Included {
                 profile: true,
                 neighbours: true,
+                related: 0,
                 passages: 5,
                 examples: 1
             }
@@ -339,6 +379,40 @@ mod tests {
         assert!(msg.starts_with("【用户给出的修改方向（优先遵循）】\n改为按 2024 年统计口径表述"));
         assert!(msg.contains("需要重写的段落（共 1 段）"));
         assert_ne!(system(FixMode::Rewrite), system(FixMode::Fix));
+    }
+
+    #[test]
+    fn related_content_and_web_sources() {
+        use super::super::context::Related;
+        let input = FixInput {
+            related: vec![Related {
+                index: 40,
+                heading_path: vec!["五、投资估算".into()],
+                text: "按单位面积造价 3000 元测算。".into(),
+            }],
+            ..input()
+        };
+        let passages = [Passage {
+            n: 1,
+            title: "美丽上海建设三年行动计划".into(),
+            heading_path: vec![],
+            text: "到2027年……".into(),
+            url: Some("https://www.shanghai.gov.cn/a.html".into()),
+        }];
+        let p = PromptInput {
+            input: &input,
+            reviewer: None,
+            profile: None,
+            passages: &passages,
+            examples: &[],
+        };
+        let (msg, inc) = build(&p, 100_000);
+        assert_eq!(inc.related, 1);
+        assert!(msg.contains("【本文其他章节的相关内容（项目自身的数据和方法以这里为准）】\n（五、投资估算）按单位面积造价 3000 元测算。"));
+        assert!(msg.contains(
+            "[1] 《美丽上海建设三年行动计划》（网页：https://www.shanghai.gov.cn/a.html）"
+        ));
+        assert!(SYSTEM.contains("需编制单位提供"));
     }
 
     #[test]

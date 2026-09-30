@@ -66,6 +66,7 @@ export function seedSettings(): Settings {
       replyOnApply: false,
       replyText: "已根据该意见修改。",
       useKb: true,
+      useWeb: true,
       kbPassages: 6,
       concurrency: 3,
       profileEvery: 10,

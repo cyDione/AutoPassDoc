@@ -13,7 +13,8 @@ export interface CardActions extends FixActions {
   /** Adds a reply to the thread; resolves false when it failed (the error is shown as a toast). */
   reply: (comment: CommentView, text: string) => Promise<boolean>;
   openAuthor: (author: string, anchor: HTMLElement) => void;
-  openCitation: (path: string) => void;
+  /** Opens a cited file, or a web page when given its address. */
+  openCitation: (pathOrUrl: string) => void;
   /** Looks up what a "【待补充…】" asks for on the web. */
   search: (comment: CommentView, need: string, passage: string) => void;
 }
@@ -54,7 +55,7 @@ function SelectionFix({ selection, onFix }: { selection: FixSelection; onFix: ()
   );
 }
 
-const STAGES: FixStage[] = ["context", "retrieve", "generate", "judge"];
+const STAGES: FixStage[] = ["context", "retrieve", "web", "generate", "judge"];
 
 const stop = (e: MouseEvent) => e.stopPropagation();
 

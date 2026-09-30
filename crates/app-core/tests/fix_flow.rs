@@ -46,6 +46,8 @@ fn core(dir: &std::path::Path, server: &MockServer) -> Core {
             thinking: String::new(),
         };
         s.fix.reply_on_apply = true;
+        // Web lookups have their own tests (fix_web.rs).
+        s.fix.use_web = false;
         store.save_settings(&s).unwrap();
     }
     core.secrets()

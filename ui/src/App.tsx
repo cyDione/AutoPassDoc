@@ -15,7 +15,7 @@ import { useTheme } from "./hooks/useTheme";
 import { KnowledgeBasePage, type DroppedFiles } from "./pages/KnowledgeBasePage";
 import { ProofreadPage } from "./pages/ProofreadPage";
 import { ReviewersPage } from "./pages/ReviewersPage";
-import type { CommentView, FixSelection, OpenedDoc, OutlineItem, Settings } from "./types";
+import type { CommentView, FixSelection, FixSource, OpenedDoc, OutlineItem, Settings } from "./types";
 import { errorMessage, isTyping } from "./util";
 
 interface Toast {
@@ -204,7 +204,10 @@ export default function App() {
     [navigate],
   );
 
-  const onSearch = useCallback((_comment: CommentView, need: string, passage: string) => setWebSearch({ need, passage, nonce: Date.now() }), []);
+  const onSearch = useCallback(
+    (_comment: CommentView, need: string, passage: string, use: (sources: FixSource[]) => void) => setWebSearch({ need, passage, use, nonce: Date.now() }),
+    [],
+  );
   const closeWebSearch = useCallback(() => setWebSearch(null), []);
   const onSearchCitation = useCallback((query: string) => setWebSearch({ need: query, query, nonce: Date.now() }), []);
 

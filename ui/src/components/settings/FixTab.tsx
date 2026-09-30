@@ -134,6 +134,16 @@ export function FixTab({ fix, onChange, proofread = PROOFREAD_DEFAULTS, onProofr
       </div>
 
       <div className="setting-row">
+        <label className="check">
+          <input type="checkbox" checked={fix.useWeb} onChange={(e) => set("useWeb", e.target.checked)} />
+          生成前联网查找公开资料
+        </label>
+        <div className="setting-hint">
+          批注或修改方向提到政策、规划、标准时，先在白名单网站查找再生成；初稿仍缺公开资料时再查一次并重写。项目自身的数据只从本文查找，找不到的标“需编制单位提供”。
+        </div>
+      </div>
+
+      <div className="setting-row">
         <div className="setting-text">
           <div className="setting-label">批量并发数</div>
           <div className="setting-hint">批量修复时同时发出的请求数，受服务商限流影响。</div>

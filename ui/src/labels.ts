@@ -2,7 +2,8 @@ import type { Case, FixStage, ModelProfileView, ModelRoleName, ProviderKind, Thi
 
 export const FIX_STAGE: Record<FixStage, string> = {
   context: "正在读取上下文",
-  retrieve: "正在检索知识库",
+  retrieve: "正在检索知识库和本文相关内容",
+  web: "正在联网查找公开资料",
   generate: "正在生成修改",
   judge: "正在评判置信度",
   done: "已完成",

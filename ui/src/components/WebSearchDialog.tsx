@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { Copy, Download, ExternalLink, FileText, Globe, Search, Sparkles, X } from "lucide-react";
+import { Copy, Download, ExternalLink, FileText, Globe, RefreshCw, Search, Sparkles, X } from "lucide-react";
 import type { Backend } from "../api";
 import type { Notify } from "../hooks/useDocumentSession";
-import type { WebResult, WebSearchOutcome } from "../types";
+import type { FixSource, WebResult, WebSearchOutcome } from "../types";
 import { errorMessage } from "../util";
 
 export interface WebSearchRequest {
@@ -12,7 +12,20 @@ export interface WebSearchRequest {
   passage?: string;
   /** Ready-made search terms (citations), used as they are. */
   query?: string;
+  /** Regenerates the fix the placeholder came from with what was found. */
+  use?: (sources: FixSource[]) => void;
   nonce: number;
+}
+
+/** What to hand the fix: the AI's answer, then the whitelisted pages found. */
+function sourcesOf(outcome: WebSearchOutcome): FixSource[] {
+  const out: FixSource[] = [];
+  if (outcome.answer) out.push({ title: outcome.answer.title, url: outcome.answer.url, text: `${outcome.answer.text}\n原文：${outcome.answer.quote}` });
+  for (const r of outcome.results.filter((r) => r.trusted && r.kind === "page")) {
+    if (out.length >= 4) break;
+    if (!out.some((s) => s.url === r.url)) out.push({ title: r.title, url: r.url, text: r.snippet });
+  }
+  return out;
 }
 
 interface Props {
@@ -142,6 +155,12 @@ export function WebSearchDialog({ backend, request, onClose, notify }: Props) {
     }
   };
   const open = (url: string) => void backend.openUrl(url).catch((e) => notify(`无法打开链接：${errorMessage(e)}`, true));
+  const found = outcome ? sourcesOf(outcome) : [];
+  const use = (sources: FixSource[]) => {
+    request.use?.(sources);
+    notify("正在用查到的资料重新生成修改");
+    onClose();
+  };
 
   return (
     <div className="dialog-backdrop" role="presentation" onClick={onClose}>
@@ -191,7 +210,12 @@ export function WebSearchDialog({ backend, request, onClose, notify }: Props) {
                   <div className="text">{outcome.answer.text}</div>
                   <div className="quote">原文：“{outcome.answer.quote}”</div>
                   <div className="row">
-                    <button type="button" className="btn sm primary" onClick={() => void copy(outcome.answer!.text)}>
+                    {request.use && (
+                      <button type="button" className="btn sm primary" title="把这段内容和出处交给 AI，重新生成修改" onClick={() => use(found)}>
+                        <RefreshCw size={12} /> 填入并重新生成
+                      </button>
+                    )}
+                    <button type="button" className={`btn sm${request.use ? "" : " primary"}`} onClick={() => void copy(outcome.answer!.text)}>
                       <Copy size={12} /> 复制
                     </button>
                     <button type="button" className="link-btn" title={outcome.answer.url} onClick={() => open(outcome.answer!.url)}>
@@ -216,8 +240,15 @@ export function WebSearchDialog({ backend, request, onClose, notify }: Props) {
           )}
         </div>
         <div className="dialog-foot">
-          <span className="muted">找到答案后，在修改里把“【待补充…】”改成实际内容再应用。</span>
+          <span className="muted">
+            {request.use ? "可以把白名单网页交给 AI 重新生成，也可以复制后手动替换“【待补充…】”。" : "找到答案后，在修改里把“【待补充…】”改成实际内容再应用。"}
+          </span>
           <span className="spacer" />
+          {request.use && (
+            <button type="button" className="btn primary" disabled={searching || found.length === 0} title="AI 会阅读这些网页，重新生成修改并注明出处" onClick={() => use(found)}>
+              <RefreshCw size={13} /> 用查到的资料重新生成
+            </button>
+          )}
           <button type="button" className="btn" onClick={onClose}>
             关闭
           </button>

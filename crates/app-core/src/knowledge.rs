@@ -34,6 +34,9 @@ pub struct Citation {
     pub stored_path: String,
     pub char_start: usize,
     pub char_end: usize,
+    /// Set for a web page found while writing a fix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 /// A search result for the knowledge-base page.
@@ -531,6 +534,7 @@ pub async fn retrieve(
             parent_text: h.parent_text,
             char_start: h.char_start,
             char_end: h.char_end,
+            url: None,
         })
         .collect();
     Ok((citations, found.warnings))

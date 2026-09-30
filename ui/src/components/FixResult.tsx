@@ -13,7 +13,8 @@ interface Props {
   /** Regenerates, switching to `mode` when given. */
   onRegenerate: (mode?: FixMode) => void;
   onReject: () => void;
-  onOpenCitation: (path: string) => void;
+  /** Opens a cited file, or a web page when given its address. */
+  onOpenCitation: (pathOrUrl: string) => void;
   /** Searches the web for what a placeholder asks for, given the text around it. */
   onSearch: (need: string, passage: string) => void;
 }
@@ -24,6 +25,8 @@ interface Need {
   need: string;
   /** The text around the placeholder, so the AI knows what it is about. */
   passage: string;
+  /** The project's own data, which only the report's authors have; not looked up online. */
+  fromAuthors: boolean;
 }
 
 /** What each "【待补充：…】" in the proposal asks for, without repeats. */
@@ -34,7 +37,7 @@ function placeholderNeeds(proposal: FixProposal): Need[] {
       const need = m[1].trim() || "待补充内容";
       const at = m.index ?? 0;
       const passage = p.new.slice(Math.max(0, at - 160), at + m[0].length + 60);
-      if (!needs.has(need)) needs.set(need, { need, passage });
+      if (!needs.has(need)) needs.set(need, { need, passage, fromAuthors: need.includes("编制单位") });
     }
   return [...needs.values()];
 }
@@ -46,12 +49,18 @@ function Placeholders({ needs, onSearch }: { needs: Need[]; onSearch: (need: str
       <div className="head">
         <AlertTriangle size={13} /> 修改里有待补充的内容，补充成实际内容后才能应用
       </div>
-      {needs.map(({ need, passage }) => (
+      {needs.map(({ need, passage, fromAuthors }) => (
         <div key={need} className="need">
-          <span className="text">{need}</span>
-          <button type="button" className="btn sm" onClick={() => onSearch(need, passage)}>
-            <Globe size={12} /> 查找资料
-          </button>
+          <span className="text">{need.replace(/^需编制单位提供[:：]?/, "")}</span>
+          {fromAuthors ? (
+            <span className="tag" title="本项目自身的数据，文中其他章节没有，网上也查不到，请向编制单位索取后填写">
+              需编制单位提供
+            </span>
+          ) : (
+            <button type="button" className="btn sm" onClick={() => onSearch(need, passage)}>
+              <Globe size={12} /> 查找资料
+            </button>
+          )}
         </div>
       ))}
     </div>
@@ -88,8 +97,8 @@ function ConfidencePill({ proposal }: { proposal: FixProposal }) {
 function JudgeDetails({ proposal }: { proposal: FixProposal }) {
   const judge = proposal.judge!;
   const seconds = (proposal.elapsedMs / 1000).toFixed(1);
-  const { passages, examples, profile } = proposal.context;
-  const context = [passages && `${passages} 段资料`, examples && `${examples} 条历史案例`, profile && "审稿人画像"].filter(Boolean);
+  const { passages, related, examples, profile } = proposal.context;
+  const context = [passages && `${passages} 段资料`, related && `本文 ${related} 段相关内容`, examples && `${examples} 条历史案例`, profile && "审稿人画像"].filter(Boolean);
   return (
     <div className="judge-items">
       {judge.items.map((item) => (
@@ -112,7 +121,7 @@ function JudgeDetails({ proposal }: { proposal: FixProposal }) {
   );
 }
 
-function CitationChips({ citations, onOpen }: { citations: Citation[]; onOpen: (path: string) => void }) {
+function CitationChips({ citations, onOpen }: { citations: Citation[]; onOpen: (pathOrUrl: string) => void }) {
   const [hover, setHover] = useState<{ anchor: HTMLElement; citation: Citation } | null>(null);
   return (
     <div className="cite-chips">
@@ -121,15 +130,17 @@ function CitationChips({ citations, onOpen }: { citations: Citation[]; onOpen: (
           key={`${c.n}-${c.chunkId}`}
           type="button"
           className="cite-chip"
-          onClick={() => onOpen(c.storedPath)}
+          title={c.url}
+          onClick={() => onOpen(c.url ?? c.storedPath)}
           onMouseEnter={(e) => setHover({ anchor: e.currentTarget, citation: c })}
           onMouseLeave={() => setHover(null)}
           onFocus={(e) => setHover({ anchor: e.currentTarget, citation: c })}
           onBlur={() => setHover(null)}
         >
           <span className="n">[{c.n}]</span>
+          {c.url && <Globe size={11} />}
           <span className="text">
-            {c.fileName}
+            {c.url ? c.title || c.fileName : c.fileName}
             {c.headingPath.length > 0 && ` · ${c.headingPath.join(" › ")}`}
           </span>
         </button>
@@ -137,11 +148,12 @@ function CitationChips({ citations, onOpen }: { citations: Citation[]; onOpen: (
       {hover && (
         <Floating anchor={hover.anchor} width={320} className="hover-card">
           <div className="hover-title">
-            <FileText size={13} /> {hover.citation.title}
+            {hover.citation.url ? <Globe size={13} /> : <FileText size={13} />} {hover.citation.title}
           </div>
+          {hover.citation.url && <div className="hover-path">{hover.citation.fileName}</div>}
           {hover.citation.headingPath.length > 0 && <div className="hover-path">{hover.citation.headingPath.join(" › ")}</div>}
           <div className="hover-text">{hover.citation.text}</div>
-          <div className="hover-hint">点击用默认程序打开</div>
+          <div className="hover-hint">{hover.citation.url ? "联网查到的网页，点击在浏览器中打开" : "点击用默认程序打开"}</div>
         </Floating>
       )}
     </div>

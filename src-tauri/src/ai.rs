@@ -39,6 +39,7 @@ fn stage_text(stage: Stage) -> (&'static str, &'static str) {
     match stage {
         Stage::Context => ("context", "正在读取批注和上下文"),
         Stage::Retrieve => ("retrieve", "正在检索知识库和审稿人习惯"),
+        Stage::Web => ("web", "正在联网查找公开资料"),
         Stage::Generate => ("generate", "正在生成修改"),
         Stage::Judge => ("judge", "正在评估置信度"),
     }

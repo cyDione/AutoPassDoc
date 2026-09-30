@@ -256,6 +256,10 @@ export function createDemoBackend(): Backend {
         stage("retrieve");
         await delay(400);
       }
+      if (request?.sources?.length || (settings.fix.useWeb && /《|规划|政策|标准|十四五|十五五/.test(`${direction}${comment.text}`))) {
+        stage("web");
+        await delay(700);
+      }
       stage("generate");
       await delay(1200);
       const first = selection ? Math.min(selection.startParagraph, selection.endParagraph) : comment.paragraphIndex;
@@ -296,7 +300,7 @@ export function createDemoBackend(): Backend {
         model: settings.roles.chat.model,
         elapsedMs: Math.round(performance.now() - started),
         warnings: draft.warnings,
-        context: { passages: draft.citations.length * 3, examples: reviewer ? 3 : 0, profile: reviewer !== null && profiles.has(reviewer.id) },
+        context: { passages: draft.citations.length * 3, related: 2, examples: reviewer ? 3 : 0, profile: reviewer !== null && profiles.has(reviewer.id) },
         mode,
       };
       proposals.set(proposal.id, proposal);

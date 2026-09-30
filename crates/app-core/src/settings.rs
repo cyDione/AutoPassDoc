@@ -54,6 +54,9 @@ pub struct FixSettings {
     pub reply_on_apply: bool,
     pub reply_text: String,
     pub use_kb: bool,
+    /// Look up public material (policies, plans, standards) on the web
+    /// before writing a fix, and again for gaps the model left.
+    pub use_web: bool,
     /// Knowledge-base passages given to the model.
     pub kb_passages: usize,
     /// Parallel requests in batch fixes.
@@ -72,6 +75,7 @@ impl Default for FixSettings {
             reply_on_apply: false,
             reply_text: "已根据该意见修改。".into(),
             use_kb: true,
+            use_web: true,
             kb_passages: 6,
             concurrency: 3,
             profile_every: 10,

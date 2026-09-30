@@ -16,6 +16,7 @@ use serde_json::Value;
 
 use crate::core::{Core, RoleName};
 use crate::error::{Error, Result};
+use crate::fix::context::{FixSource, terms};
 use crate::knowledge::ImportResult;
 use crate::search_api::SearchService;
 
@@ -196,6 +197,73 @@ pub struct LookupRequest {
     pub need: Option<String>,
     /// The sentence or paragraph around the placeholder.
     pub passage: Option<String>,
+}
+
+/// Text read off a web page for a fix to cite.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WebSource {
+    pub title: String,
+    pub url: Option<String>,
+    pub site: String,
+    pub text: String,
+}
+
+/// The sentences of `text` sharing the most terms with `focus`, in their
+/// original order, within `max` characters; the start of the text when
+/// none do.
+pub fn excerpt(text: &str, focus: &str, max: usize) -> String {
+    let wanted = terms(focus);
+    let mut sentences: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for c in text.chars() {
+        if c != '\n' {
+            current.push(c);
+        }
+        if matches!(c, '。' | '！' | '？' | '；' | '\n') {
+            let s = current.trim();
+            if !s.is_empty() {
+                sentences.push(s.chars().take(300).collect());
+            }
+            current.clear();
+        }
+    }
+    if !current.trim().is_empty() {
+        sentences.push(current.trim().chars().take(300).collect());
+    }
+    let mut scored: Vec<(usize, usize)> = sentences
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (wanted.iter().filter(|w| s.contains(w.as_str())).count(), i))
+        .filter(|(n, _)| *n >= 2)
+        .collect();
+    if scored.is_empty() {
+        return text
+            .chars()
+            .take(max)
+            .collect::<String>()
+            .trim()
+            .to_string();
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut picked = Vec::new();
+    let mut used = 0;
+    for (_, i) in scored {
+        let len = sentences[i].chars().count();
+        if used + len > max {
+            continue;
+        }
+        used += len;
+        picked.push(i);
+    }
+    picked.sort_unstable();
+    let mut out = String::new();
+    for (k, i) in picked.iter().enumerate() {
+        if k > 0 && picked[k - 1] + 1 != *i {
+            out.push('…');
+        }
+        out.push_str(&sentences[*i]);
+    }
+    out
 }
 
 /// A link shown to the user: (file type the link named, document title).
@@ -585,6 +653,8 @@ const TERMS_PROMPT: &str = "你帮助撰写政府项目报告的人查资料。�
 - 每组关键词用空格分隔，不超过 20 个字，不要写成问句，不要带文件名、项目名等与资料无关的词；
 - 最有把握的一组放在最前面，最多 3 组。
 
+要补充的如果是项目自身的情况（本项目的测算方法、参数取值、投资、工程量、实施安排等），网上查不到，输出 {\"queries\": []}。
+
 只输出 JSON：{\"queries\": [\"关键词1\", \"关键词2\"]}";
 
 const ANSWER_PROMPT: &str = "你帮助撰写政府项目报告的人补全资料。报告里有一处“待补充”，下面给出它要补充什么、所在原文，以及几份编号的网页原文。请根据网页原文写出可以直接替换“【待补充…】”的文字，与所在原文语气衔接，简洁准确。
@@ -596,6 +666,8 @@ const ANSWER_PROMPT: &str = "你帮助撰写政府项目报告的人补全资料
 /// Pages read when drafting an answer, and how much of each.
 const PAGES_TO_READ: usize = 3;
 const PAGE_CHARS: usize = 5000;
+/// How much of a page a fix is given.
+const SOURCE_CHARS: usize = 1500;
 
 const SCREEN_PROMPT: &str = "你帮助撰写政府项目报告的人筛选搜索结果。给出报告里要补充的资料和一组编号的搜索结果，请挑出可能包含所需资料的结果，按相关程度从高到低排列，并用一句话说明各自能提供什么。与所需资料无关的结果不要列出。
 
@@ -688,56 +760,21 @@ impl Core {
             queries.push(topic.clone());
         }
 
-        if matches!(settings.mode, WebMode::Auto | WebMode::Model) {
-            let ask = describe_need(&queries[0], None)
-                + &need
-                    .as_deref()
-                    .map(|n| format!("\n{}", describe_need(n, passage.as_deref())))
-                    .unwrap_or_default();
-            match self.model_search(&ask, &settings).await {
-                Ok(mut results) if !results.is_empty() => {
-                    results.sort_by_key(|r| !r.trusted);
-                    self.remember(&results);
-                    return Ok(SearchOutcome {
-                        results,
-                        via: "model",
-                        notes,
-                        queries,
-                        answer: None,
-                    });
-                }
-                Ok(_) => notes.push("大语言模型联网搜索没有找到结果".into()),
-                Err(e) => notes.push(e.to_string()),
-            }
-            if settings.mode == WebMode::Model {
-                return Ok(SearchOutcome {
-                    results: Vec::new(),
-                    via: "model",
-                    notes,
-                    queries,
-                    answer: None,
-                });
-            }
-            notes.push("已改用本机搜索".into());
-        }
-        let mut results = self.local_search(&queries, &settings, &mut notes).await?;
-        if let Some(chat) = &chat
-            && results.len() > 1
-        {
-            match self
-                .screen(chat, &topic, passage.as_deref(), &results)
-                .await
-            {
-                Ok(kept) if kept.is_empty() => {
-                    notes.push("AI 认为这些结果都不太相关，仍列出供参考".into())
-                }
-                Ok(kept) => results = kept,
-                Err(e) => notes.push(format!("AI 筛选结果失败：{e}")),
-            }
-        }
-        results.sort_by_key(|r| !r.trusted);
+        let (results, via) = self
+            .find(
+                chat.as_ref(),
+                &topic,
+                need.as_deref(),
+                passage.as_deref(),
+                &queries,
+                &settings,
+                &mut notes,
+            )
+            .await?;
         let mut answer = None;
-        if let (Some(chat), Some(need)) = (&chat, &need) {
+        if via == "local"
+            && let (Some(chat), Some(need)) = (&chat, &need)
+        {
             match self
                 .draft_answer(chat, need, passage.as_deref(), &results)
                 .await
@@ -747,15 +784,186 @@ impl Core {
                 Err(e) => notes.push(format!("AI 读取网页失败：{e}")),
             }
         }
-        // Files off the whitelist are only opened in the browser.
-        let trusted: Vec<WebResult> = results.iter().filter(|r| r.trusted).cloned().collect();
-        self.remember(&trusted);
         Ok(SearchOutcome {
             results,
-            via: "local",
+            via,
             notes,
             queries,
             answer,
+        })
+    }
+
+    /// Results for `queries`: the chat model's own search when it can, else
+    /// this machine's search screened by the chat model. Whitelisted sites
+    /// come first; the links shown may later be downloaded.
+    #[allow(clippy::too_many_arguments)]
+    async fn find(
+        &self,
+        chat: Option<&crate::core::Target>,
+        topic: &str,
+        need: Option<&str>,
+        passage: Option<&str>,
+        queries: &[String],
+        settings: &WebSettings,
+        notes: &mut Vec<String>,
+    ) -> Result<(Vec<WebResult>, &'static str)> {
+        if matches!(settings.mode, WebMode::Auto | WebMode::Model) {
+            let ask = describe_need(&queries[0], None)
+                + &need
+                    .map(|n| format!("\n{}", describe_need(n, passage)))
+                    .unwrap_or_default();
+            match self.model_search(&ask, settings).await {
+                Ok(mut results) if !results.is_empty() => {
+                    results.sort_by_key(|r| !r.trusted);
+                    self.remember(&results);
+                    return Ok((results, "model"));
+                }
+                Ok(_) => notes.push("大语言模型联网搜索没有找到结果".into()),
+                Err(e) => notes.push(e.to_string()),
+            }
+            if settings.mode == WebMode::Model {
+                return Ok((Vec::new(), "model"));
+            }
+            notes.push("已改用本机搜索".into());
+        }
+        let mut results = self.local_search(queries, settings, notes).await?;
+        if let Some(chat) = chat
+            && results.len() > 1
+        {
+            match self.screen(chat, topic, passage, &results).await {
+                Ok(kept) if kept.is_empty() => {
+                    notes.push("AI 认为这些结果都不太相关，仍列出供参考".into())
+                }
+                Ok(kept) => results = kept,
+                Err(e) => notes.push(format!("AI 筛选结果失败：{e}")),
+            }
+        }
+        results.sort_by_key(|r| !r.trusted);
+        // Files off the whitelist are only opened in the browser.
+        let trusted: Vec<WebResult> = results.iter().filter(|r| r.trusted).cloned().collect();
+        self.remember(&trusted);
+        Ok((results, "local"))
+    }
+
+    /// Public material for what a fix needs, read off whitelisted pages
+    /// before the fix is written. Empty when the chat model judges the need
+    /// to be the project's own data, which no website has.
+    pub async fn web_sources(
+        &self,
+        need: &str,
+        passage: Option<&str>,
+        notes: &mut Vec<String>,
+    ) -> Result<Vec<WebSource>> {
+        let settings = self.web_settings()?;
+        if settings.mode == WebMode::Off {
+            return Ok(Vec::new());
+        }
+        let chat = self.require(RoleName::Chat)?;
+        let passage = passage.map(|p| p.chars().take(400).collect::<String>());
+        let queries = self
+            .search_terms(&chat, need, passage.as_deref())
+            .await
+            .map_err(|e| Error::Invalid(format!("AI 生成搜索词失败：{e}")))?;
+        if queries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (results, _) = self
+            .find(
+                Some(&chat),
+                need,
+                Some(need),
+                passage.as_deref(),
+                &queries,
+                &settings,
+                notes,
+            )
+            .await?;
+        let focus = format!("{need}\n{}", queries.join(" "));
+        let mut out = Vec::new();
+        for r in results
+            .iter()
+            .filter(|r| r.trusted && r.kind == ResultKind::Page)
+            .take(PAGES_TO_READ)
+        {
+            if let Some(source) = self.read_source(&r.url, &r.title, &focus).await {
+                out.push(source);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Material the user found with 查找资料: what they were shown, and the
+    /// page itself when it is on a whitelisted site.
+    pub async fn given_sources(&self, given: &[FixSource], focus: &str) -> Vec<WebSource> {
+        let whitelist = self.web_settings().map(|s| s.whitelist).unwrap_or_default();
+        let mut out: Vec<WebSource> = Vec::new();
+        for g in given {
+            let url = http_url(g.url.trim());
+            let trusted = url
+                .as_ref()
+                .and_then(|u| u.host_str())
+                .is_some_and(|h| allowed(h, &whitelist));
+            let page = match &url {
+                Some(u) if trusted => {
+                    self.read_source(u.as_str(), &g.title, &format!("{focus}\n{}", g.text))
+                        .await
+                }
+                _ => None,
+            };
+            let told = g.text.trim();
+            let text = match &page {
+                Some(p) if told.is_empty() => p.text.clone(),
+                Some(p) => format!("{told}\n{}", p.text),
+                None => told.to_string(),
+            };
+            if text.is_empty() {
+                continue;
+            }
+            let title = Some(g.title.trim())
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+                .or_else(|| page.as_ref().map(|p| p.title.clone()))
+                .unwrap_or_else(|| "查到的资料".into());
+            out.push(WebSource {
+                title,
+                site: url
+                    .as_ref()
+                    .and_then(|u| u.host_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                url: url.map(|u| u.to_string()),
+                text,
+            });
+        }
+        out
+    }
+
+    /// A page's text around `focus`, if robots.txt allows reading it.
+    async fn read_source(&self, url: &str, title: &str, focus: &str) -> Option<WebSource> {
+        let parsed = Url::parse(url).ok()?;
+        if !self.robots_allow(&parsed).await {
+            return None;
+        }
+        let html = self.fetch_text(&parsed, MAX_PAGE_BYTES).await.ok()?;
+        let (heading, body) = article(&html);
+        let body = if body.chars().count() < 50 {
+            page_text(&html)
+        } else {
+            body
+        };
+        let text = excerpt(&body, focus, SOURCE_CHARS);
+        if text.chars().count() < 20 {
+            return None;
+        }
+        Some(WebSource {
+            title: if title.trim().is_empty() {
+                heading
+            } else {
+                title.trim().to_string()
+            },
+            site: parsed.host_str().unwrap_or_default().to_string(),
+            url: Some(parsed.to_string()),
+            text,
         })
     }
 
@@ -1820,6 +2028,17 @@ mod tests {
             body,
             "第一条 为了规范管理，制定本办法。\n\n第二条 本办法自发布之日起施行。"
         );
+    }
+
+    #[test]
+    fn excerpts_the_sentences_about_the_focus() {
+        let text = "首页\n通知公告\n到2030年，美丽上海建设取得显著成效。天气晴。生态环境质量持续改善，美丽上海基本建成；其他事项另行通知。";
+        let out = excerpt(text, "美丽上海 十五五 规划目标", 200);
+        assert_eq!(
+            out,
+            "到2030年，美丽上海建设取得显著成效。…生态环境质量持续改善，美丽上海基本建成；"
+        );
+        assert_eq!(excerpt("无关内容", "美丽上海", 2), "无关");
     }
 
     #[test]

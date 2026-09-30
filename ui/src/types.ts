@@ -119,6 +119,8 @@ export interface Citation {
   storedPath: string;
   charStart: number;
   charEnd: number;
+  /** Set for a web page found while writing the fix. */
+  url?: string;
 }
 
 export interface JudgeItem {
@@ -160,6 +162,16 @@ export interface FixRequest {
   mode?: FixMode;
   /** Steers the model; followed ahead of the minimal-change rule. */
   direction?: string | null;
+  /** Material found with 查找资料 for the model to use. */
+  sources?: FixSource[] | null;
+}
+
+/** Something the user found on the web and handed to the next fix. */
+export interface FixSource {
+  title: string;
+  url: string;
+  /** The answer or snippet that was shown. */
+  text: string;
 }
 
 /** Marks what the model could not find; a proposal holding one cannot be applied until the user fills it in. */
@@ -180,11 +192,12 @@ export interface FixProposal {
   model: string;
   elapsedMs: number;
   warnings: string[];
-  context: { passages: number; examples: number; profile: boolean };
+  /** `related`: paragraphs from other sections of the document. */
+  context: { passages: number; related: number; examples: number; profile: boolean };
   mode: FixMode;
 }
 
-export type FixStage = "context" | "retrieve" | "generate" | "judge" | "done" | "error";
+export type FixStage = "context" | "retrieve" | "web" | "generate" | "judge" | "done" | "error";
 
 /** Emitted while a fix (single or batch) runs. */
 export interface FixProgress {
@@ -267,6 +280,8 @@ export interface Settings {
     replyOnApply: boolean;
     replyText: string;
     useKb: boolean;
+    /** Look up public material on the web before writing a fix, and again for gaps left. */
+    useWeb: boolean;
     kbPassages: number;
     concurrency: number;
     profileEvery: number;

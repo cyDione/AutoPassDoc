@@ -1,6 +1,8 @@
 //! The AI-fix pipeline: gather the comment's context, retrieve supporting
-//! passages and the reviewer's history, ask the chat model for a minimal
-//! rewrite, score it with the decision model, and apply it on request.
+//! passages (knowledge base, related sections of the document, public
+//! material on the web) and the reviewer's history, ask the chat model for a
+//! minimal rewrite, look up public gaps it left and rewrite once more, score
+//! it with the decision model, and apply it on request.
 
 pub mod context;
 pub mod judge;
@@ -21,8 +23,10 @@ use crate::profiles;
 use crate::reviewers;
 use crate::settings::DecisionBackend;
 use crate::store::{Case, CaseAction};
+use crate::web::{WebMode, WebSource};
 use context::{FixInput, FixMode};
 use judge::Judgement;
+use parse::Rewrite;
 use prompt::{Passage, PromptInput};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -30,6 +34,8 @@ use prompt::{Passage, PromptInput};
 pub enum Stage {
     Context,
     Retrieve,
+    /// Looking up public material on the web.
+    Web,
     Generate,
     Judge,
 }
@@ -46,6 +52,8 @@ pub struct FixParagraph {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ContextUsed {
     pub passages: usize,
+    /// Paragraphs from other sections of the document.
+    pub related: usize,
     pub examples: usize,
     pub profile: bool,
 }
@@ -73,6 +81,127 @@ pub struct Proposal {
 /// The mark the model leaves where it lacks facts; a rewrite holding one
 /// cannot be applied until the user fills it in.
 pub const PLACEHOLDER: &str = "【待补充";
+
+/// Written into a placeholder for the project's own data, which only the
+/// report's authors have; such gaps are not looked up online.
+pub const FROM_AUTHORS: &str = "编制单位";
+
+/// Words in a comment or revision direction that point at public material
+/// (policies, plans, laws, standards) worth looking up before the fix.
+const PUBLIC_HINTS: &[&str] = &[
+    "《",
+    "规划",
+    "纲要",
+    "政策",
+    "条例",
+    "法规",
+    "法律",
+    "标准",
+    "十四五",
+    "十五五",
+    "行动计划",
+    "指导意见",
+    "实施意见",
+    "文件精神",
+    "上位",
+];
+
+/// Public gaps looked up after the first draft.
+const GAPS_TO_LOOK_UP: usize = 2;
+
+/// Whether `ask` names public material to look up.
+fn asks_public(ask: &str) -> bool {
+    PUBLIC_HINTS.iter().any(|h| ask.contains(h))
+}
+
+/// What each "【待补充…】" asks for, with the text around it, leaving out
+/// the project's own data.
+pub fn public_gaps(paragraphs: &[String]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for p in paragraphs {
+        let chars: Vec<char> = p.chars().collect();
+        let mut rest = p.as_str();
+        let mut offset = 0;
+        while let Some(at) = rest.find(PLACEHOLDER) {
+            let tail = &rest[at + PLACEHOLDER.len()..];
+            let Some(end) = tail.find('】') else { break };
+            let need = tail[..end]
+                .trim_start_matches(['：', ':'])
+                .trim()
+                .to_string();
+            let start = p[..offset + at].chars().count();
+            let stop = start + PLACEHOLDER.chars().count() + tail[..end].chars().count() + 1;
+            let passage: String = chars[start.saturating_sub(160)..(stop + 60).min(chars.len())]
+                .iter()
+                .collect();
+            if !need.is_empty()
+                && !need.contains(FROM_AUTHORS)
+                && !out.iter().any(|(n, _)| *n == need)
+            {
+                out.push((need, passage));
+            }
+            let used = at + PLACEHOLDER.len() + end + '】'.len_utf8();
+            offset += used;
+            rest = &rest[used..];
+        }
+    }
+    out
+}
+
+/// A web page as a citation, numbered after the knowledge-base passages.
+fn web_citation(n: usize, s: &WebSource) -> Citation {
+    Citation {
+        n,
+        doc_id: 0,
+        chunk_id: 0,
+        file_name: s.site.clone(),
+        title: s.title.clone(),
+        heading_path: Vec::new(),
+        text: s.text.chars().take(300).collect(),
+        parent_text: s.text.clone(),
+        stored_path: String::new(),
+        char_start: 0,
+        char_end: 0,
+        url: s.url.clone(),
+    }
+}
+
+/// Adds the pages not cited yet; returns how many were new.
+fn add_sources(citations: &mut Vec<Citation>, found: Vec<WebSource>) -> usize {
+    let mut added = 0;
+    for s in found {
+        let known = citations.iter().any(|c| {
+            c.url.is_some() && c.url == s.url
+                || c.url.is_none() && s.url.is_none() && c.text == s.text
+        });
+        if !known {
+            citations.push(web_citation(citations.len() + 1, &s));
+            added += 1;
+        }
+    }
+    added
+}
+
+fn passages_of(citations: &[Citation]) -> Vec<Passage> {
+    citations
+        .iter()
+        .map(|c| Passage {
+            n: c.n,
+            title: if c.title.is_empty() {
+                c.file_name.clone()
+            } else {
+                c.title.clone()
+            },
+            heading_path: c.heading_path.clone(),
+            text: if c.parent_text.is_empty() {
+                c.text.clone()
+            } else {
+                c.parent_text.clone()
+            },
+            url: c.url.clone(),
+        })
+        .collect()
+}
 
 /// A proposal waiting for the user's decision.
 pub(crate) struct Stored {
@@ -140,8 +269,12 @@ impl Core {
         let mut warnings = Vec::new();
 
         progress(Stage::Retrieve);
-        let citations = if settings.fix.use_kb {
-            let query = format!("{}\n{}", input.comment, input.quote);
+        let mut ask = input.comment.clone();
+        if let Some(d) = &input.direction {
+            ask = format!("{d}\n{ask}");
+        }
+        let mut citations = if settings.fix.use_kb {
+            let query = format!("{ask}\n{}", input.quote);
             let (found, notes) =
                 knowledge::retrieve(self, &query, settings.fix.kb_passages).await?;
             warnings.extend(notes);
@@ -149,23 +282,6 @@ impl Core {
         } else {
             Vec::new()
         };
-        let passages: Vec<Passage> = citations
-            .iter()
-            .map(|c| Passage {
-                n: c.n,
-                title: if c.title.is_empty() {
-                    c.file_name.clone()
-                } else {
-                    c.title.clone()
-                },
-                heading_path: c.heading_path.clone(),
-                text: if c.parent_text.is_empty() {
-                    c.text.clone()
-                } else {
-                    c.parent_text.clone()
-                },
-            })
-            .collect();
         let (profile_text, examples) = match &reviewer {
             Some(r) => {
                 let store = self.store();
@@ -176,6 +292,29 @@ impl Core {
             }
             None => (None, Vec::new()),
         };
+
+        // Public material named by the comment or the direction, and what
+        // the user already found, go in before the first draft.
+        let web_on = settings.fix.use_web && settings.web.mode != WebMode::Off;
+        if !input.sources.is_empty() {
+            progress(Stage::Web);
+            let given = self.given_sources(&input.sources, &ask).await;
+            add_sources(&mut citations, given);
+        }
+        if web_on && asks_public(&ask) {
+            progress(Stage::Web);
+            let need = input
+                .direction
+                .clone()
+                .unwrap_or_else(|| input.comment.clone());
+            let passage = input
+                .paragraphs
+                .first()
+                .map(|(_, t)| t.as_str())
+                .or(Some(input.quote.as_str()));
+            self.look_up(&need, passage, &mut citations, &mut warnings)
+                .await;
+        }
 
         progress(Stage::Generate);
         let out_tokens = max_tokens(&chat, &input);
@@ -189,16 +328,54 @@ impl Core {
                 format!("{}（{}）", r.name, r.note)
             }
         });
-        let (user, included) = prompt::build(
-            &PromptInput {
-                input: &input,
-                reviewer: reviewer_line.as_deref(),
-                profile: profile_text.as_deref(),
-                passages: &passages,
-                examples: &examples,
-            },
-            budget,
-        );
+        let build = |passages: &[Passage]| {
+            prompt::build(
+                &PromptInput {
+                    input: &input,
+                    reviewer: reviewer_line.as_deref(),
+                    profile: profile_text.as_deref(),
+                    passages,
+                    examples: &examples,
+                },
+                budget,
+            )
+        };
+        let mut passages = passages_of(&citations);
+        let (user, mut included) = build(&passages);
+        let mut rewrite = self
+            .write_fix(&chat, &input, user, out_tokens, &check)
+            .await?;
+
+        // Public gaps left in the draft are looked up and the fix is
+        // written again with what was found.
+        let gaps = public_gaps(&rewrite.paragraphs);
+        if web_on && !gaps.is_empty() {
+            progress(Stage::Web);
+            let before = citations.len();
+            for (need, passage) in gaps.iter().take(GAPS_TO_LOOK_UP) {
+                self.look_up(need, Some(passage), &mut citations, &mut warnings)
+                    .await;
+            }
+            if citations.len() > before {
+                progress(Stage::Generate);
+                passages = passages_of(&citations);
+                let (user, again) = build(&passages);
+                match self
+                    .write_fix(&chat, &input, user, out_tokens, &check)
+                    .await
+                {
+                    Ok(r) => {
+                        rewrite = r;
+                        included = again;
+                    }
+                    Err(e) => warnings.push(format!("用查到的资料重写失败，保留初稿：{e}")),
+                }
+            } else {
+                warnings.push(
+                    "联网没有查到可以填补“待补充”的公开资料，可以点“查找资料”换个说法再查".into(),
+                );
+            }
+        }
         if included.passages < passages.len() {
             warnings.push(format!(
                 "模型上下文有限，只用了 {} 条参考资料中的 {} 条",
@@ -206,52 +383,6 @@ impl Core {
                 included.passages
             ));
         }
-        let mut messages = vec![
-            Message::system(prompt::system(input.mode)),
-            Message::user(user),
-        ];
-        let mut rewrite = None;
-        let mut last_problem = String::new();
-        for attempt in 0..2 {
-            let mut req = ChatRequest::new(chat.model.clone(), messages.clone());
-            req.profile = chat.profile.clone();
-            req.thinking = chat.thinking;
-            req.max_tokens = Some(out_tokens);
-            req.temperature = Some(0.3);
-            req.json_output = true;
-            let response = self
-                .client()
-                .chat(&chat.provider, &req)
-                .await
-                .map_err(|e| Error::Invalid(format!("大语言模型调用失败：{e}")))?;
-            let parsed = parse::rewrite(&response.content, input.paragraphs.len()).and_then(|r| {
-                let changes: Vec<(usize, String)> = input
-                    .paragraphs
-                    .iter()
-                    .zip(&r.paragraphs)
-                    .map(|((i, _), t)| (*i, t.clone()))
-                    .collect();
-                check(&changes).map_err(|e| e.to_string())?;
-                Ok(r)
-            });
-            match parsed {
-                Ok(r) => {
-                    rewrite = Some(r);
-                    break;
-                }
-                Err(problem) if attempt == 0 => {
-                    messages.push(Message::assistant(response.content));
-                    messages.push(Message::user(prompt::correction(
-                        &problem,
-                        input.paragraphs.len(),
-                    )));
-                    last_problem = problem;
-                }
-                Err(problem) => last_problem = problem,
-            }
-        }
-        let rewrite =
-            rewrite.ok_or_else(|| Error::Invalid(format!("模型的修改无法使用：{last_problem}")))?;
         if rewrite
             .paragraphs
             .iter()
@@ -331,6 +462,7 @@ impl Core {
             warnings,
             context: ContextUsed {
                 passages: included.passages,
+                related: included.related,
                 examples: included.examples,
                 profile: included.profile,
             },
@@ -373,6 +505,82 @@ impl Core {
             },
         );
         Ok(proposal)
+    }
+
+    /// Asks the chat model for the rewrite, once more with the problem
+    /// pointed out when the first answer cannot be used.
+    async fn write_fix(
+        &self,
+        chat: &Target,
+        input: &FixInput,
+        user: String,
+        out_tokens: u32,
+        check: &impl Fn(&[(usize, String)]) -> Result<()>,
+    ) -> Result<Rewrite> {
+        let mut messages = vec![
+            Message::system(prompt::system(input.mode)),
+            Message::user(user),
+        ];
+        let mut last_problem = String::new();
+        for attempt in 0..2 {
+            let mut req = ChatRequest::new(chat.model.clone(), messages.clone());
+            req.profile = chat.profile.clone();
+            req.thinking = chat.thinking;
+            req.max_tokens = Some(out_tokens);
+            req.temperature = Some(0.3);
+            req.json_output = true;
+            let response = self
+                .client()
+                .chat(&chat.provider, &req)
+                .await
+                .map_err(|e| Error::Invalid(format!("大语言模型调用失败：{e}")))?;
+            let parsed = parse::rewrite(&response.content, input.paragraphs.len()).and_then(|r| {
+                let changes: Vec<(usize, String)> = input
+                    .paragraphs
+                    .iter()
+                    .zip(&r.paragraphs)
+                    .map(|((i, _), t)| (*i, t.clone()))
+                    .collect();
+                check(&changes).map_err(|e| e.to_string())?;
+                Ok(r)
+            });
+            match parsed {
+                Ok(r) => return Ok(r),
+                Err(problem) if attempt == 0 => {
+                    messages.push(Message::assistant(response.content));
+                    messages.push(Message::user(prompt::correction(
+                        &problem,
+                        input.paragraphs.len(),
+                    )));
+                    last_problem = problem;
+                }
+                Err(problem) => last_problem = problem,
+            }
+        }
+        Err(Error::Invalid(format!(
+            "模型的修改无法使用：{last_problem}"
+        )))
+    }
+
+    /// Looks `need` up on the web and cites the pages found. Failures become
+    /// warnings: the fix goes on without them.
+    async fn look_up(
+        &self,
+        need: &str,
+        passage: Option<&str>,
+        citations: &mut Vec<Citation>,
+        warnings: &mut Vec<String>,
+    ) {
+        let mut notes = Vec::new();
+        match self.web_sources(need, passage, &mut notes).await {
+            Ok(found) if found.is_empty() && !notes.is_empty() => {
+                warnings.push(format!("联网查找“{need}”没有结果（{}）", notes.join("；")))
+            }
+            Ok(found) => {
+                add_sources(citations, found);
+            }
+            Err(e) => warnings.push(format!("联网查找资料失败：{e}")),
+        }
     }
 
     /// Writes a proposal into the document as one undo step (the rewrite,
@@ -475,4 +683,22 @@ impl Core {
 
 fn join<'a>(parts: impl Iterator<Item = &'a str>) -> String {
     parts.collect::<Vec<_>>().join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_gaps_leave_out_the_authors_data() {
+        let gaps = public_gaps(&[
+            "本项目衔接【待补充：美丽上海“十五五”规划目标】，按【待补充：需编制单位提供测算方法】测算。".into(),
+            "又见【待补充：美丽上海“十五五”规划目标】和【待补充】。".into(),
+        ]);
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert_eq!(gaps[0].0, "美丽上海“十五五”规划目标");
+        assert!(gaps[0].1.starts_with("本项目衔接【待补充"));
+        assert!(asks_public("加入“美丽上海 十五五”的简述"));
+        assert!(!asks_public("请说明测算方法和主要参数取值依据。"));
+    }
 }
