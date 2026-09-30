@@ -31,6 +31,7 @@ const LABEL = Object.fromEntries(CATEGORIES.map(([k, l]) => [k, l])) as Record<P
 
 const STAGE_TEXT: Record<ProofProgress["stage"], string> = {
   rules: "规则检查",
+  screen: "决策模型初筛可疑段落",
   model: "大语言模型逐节通读",
   consistency: "比对前后数据",
   citations: "联网核查引用文件",
@@ -223,10 +224,11 @@ function Strategy() {
       </button>
       {open && (
         <ol>
-          <li>规则先行：格式、序号、地名和引用清单由本机规则检查，快速且不花费额度。</li>
+          <li>规则先行：格式、序号、地名、常见错别字和引用清单由本机规则检查，快速且不花费额度；太短的段落（数字、单位、表格短单元格）不送模型，重复出现的段落只查一次。</li>
+          <li>决策模型初筛（快速模式）：Jev 逐段判断是否可能有错，只有可疑段落交给大语言模型细读；判断结果随段落缓存。交终稿前可切到“逐段通读”。</li>
           <li>识别项目信息：从标题、封面和正文提取项目名称、所在省市区、建设单位，作为“张冠李戴”的比对基准。</li>
           <li>逐节通读：大语言模型按章节（约 3000 字一段）多节同时检查错别字、用词和与项目信息不符的表述，边查边显示；每条发现必须原文引用，否则丢弃。并发数和是否深度思考在设置 › AI 修复中调整。</li>
-          <li>前后比对：抽取全文中的金额、数量、日期等数据，本机比对后再由模型确认是否真的矛盾。</li>
+          <li>前后比对：本机抽取全文的总投资、面积、工期、长度、规模等关键指标，比对后再由模型确认是否真的矛盾。</li>
           <li>引用时效：对《》中的法律、标准和政策文件联网核查，已废止或被替代的给出现行版本，可一键查找并下载到知识库。</li>
           <li>增量复查：未改动的段落沿用上次结果，修改后再次校对只检查变化的章节。</li>
         </ol>
@@ -239,6 +241,7 @@ export const ProofreadPage = memo(function ProofreadPage({ backend, doc, section
   const [categories, setCategories] = useState<ProofCategory[]>(() => CATEGORIES.map(([k]) => k));
   const [useModel, setUseModel] = useState(true);
   const [range, setRange] = useState<Range>("all");
+  const [depth, setDepth] = useState<"quick" | "full">("quick");
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<ProofProgress | null>(null);
   // Findings shown while a run is going.
@@ -279,6 +282,8 @@ export const ProofreadPage = memo(function ProofreadPage({ backend, doc, section
   );
 
   const hasModel = !!settings?.roles.chat.model;
+  // Screening needs Jev itself; a chat model standing in for it is no faster than reading.
+  const canScreen = hasModel && !!settings?.roles.decision.model && settings.roles.decisionBackend === "jev";
   const run = async () => {
     if (docId === null) return;
     setRunning(true);
@@ -288,7 +293,7 @@ export const ProofreadPage = memo(function ProofreadPage({ backend, doc, section
     try {
       const r = await backend.proofread(
         docId,
-        { categories, useModel: useModel && hasModel, facts },
+        { categories, useModel: useModel && hasModel, facts, screen: canScreen && depth === "quick" },
         range === "section" && section ? [section.start, Math.max(section.start, section.end - 1)] : null,
       );
       setReport(r);
@@ -376,7 +381,8 @@ export const ProofreadPage = memo(function ProofreadPage({ backend, doc, section
             <div className="page-sub">
               {doc.fileName}
               {report &&
-                ` · ${openCount} 条待处理 · ${report.sections} 节${report.cachedSections ? `（${report.cachedSections} 节沿用上次结果）` : ""} · 调用模型 ${formatNumber(report.modelCalls)} 次`}
+                ` · ${openCount} 条待处理 · ${report.sections} 节${report.cachedSections ? `（${report.cachedSections} 节沿用上次结果）` : ""} · 调用模型 ${formatNumber(report.modelCalls)} 次` +
+                  (report.screenedOut ? ` · 决策模型初筛放过 ${formatNumber(report.screenedOut)} 段` : "")}
             </div>
           </div>
           <span className="spacer" />
@@ -410,6 +416,19 @@ export const ProofreadPage = memo(function ProofreadPage({ backend, doc, section
               </label>
             </div>
             <span className="spacer" />
+            {useModel && hasModel && (
+              <div
+                className="radio-group"
+                title={canScreen ? undefined : "需要在设置 › 模型分配中配置决策模型 Jev（大模型代答的判定模型不能加速）"}
+              >
+                <label className="radio" title="决策模型先判断每段是否可疑，大语言模型只细读可疑段落，快好几倍">
+                  <input type="radio" checked={canScreen && depth === "quick"} disabled={running || !canScreen} onChange={() => setDepth("quick")} /> 快速（Jev 初筛）
+                </label>
+                <label className="radio" title="大语言模型逐段细读全文，最全面，也最慢；适合交终稿前">
+                  <input type="radio" checked={!canScreen || depth === "full"} disabled={running} onChange={() => setDepth("full")} /> 逐段通读
+                </label>
+              </div>
+            )}
             <label className="check" title={hasModel ? "错别字、张冠李戴、前后矛盾需要大语言模型；关闭后只做规则检查" : "尚未配置大语言模型"}>
               <input type="checkbox" checked={useModel && hasModel} disabled={running || !hasModel} onChange={(e) => setUseModel(e.target.checked)} />
               使用大语言模型

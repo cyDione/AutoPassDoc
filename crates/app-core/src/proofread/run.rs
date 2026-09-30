@@ -1,22 +1,25 @@
-//! Running a proofread: rules, then the model section by section (cached per
-//! paragraph), then the cross-document figure comparison and the citation
-//! status checks, merged into one report.
+//! Running a proofread: rules, then (optionally) the decision model
+//! screening paragraphs, then the chat model reading the flagged ones
+//! section by section (both cached per paragraph), then the cross-document
+//! figure comparison and the citation status checks, merged into one
+//! report.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::StreamExt;
-use models::{ChatRequest, Message, ThinkingLevel};
+use models::{AnswerValue, ChatRequest, Message, Question, ThinkingLevel};
 use serde::{Deserialize, Serialize};
 
 use super::model::{self, CitationLookup, CitationStatus, Fact};
 use super::{
-    Category, Citation, CitationKind, Issue, ProjectFacts, ProofInput, ProofParagraph, check_rules,
-    extract_citations, extract_facts, hash, merge_issues,
+    Category, Citation, CitationKind, Issue, ProjectFacts, ProofInput, ProofParagraph, Source,
+    check_rules, extract_citations, extract_facts, hash, merge_issues, screen,
 };
 use crate::core::{Core, RoleName, Target};
 use crate::error::{Error, Result};
 use crate::fix::prompt::estimate_tokens;
+use crate::settings::DecisionBackend;
 use crate::store::now;
 
 /// Most characters in one model section.
@@ -31,6 +34,14 @@ const CACHE_DAYS: i64 = 90;
 const CITATION_CACHE_DAYS: i64 = 7;
 /// Bump when prompts or the cached shape change.
 const CACHE_VERSION: &str = "v2";
+/// Paragraphs the decision model judges in one request, and their most
+/// characters.
+const GATE_BATCH: usize = 24;
+const GATE_CHARS: usize = 4000;
+/// The chat model reads a paragraph when the decision model gives at least
+/// this probability that it has a mistake. Low on purpose: a paragraph read
+/// for nothing costs a little time, a missed typo stays in the report.
+pub const GATE_THRESHOLD: f32 = 0.2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -46,6 +57,9 @@ pub struct ProofOptions {
     /// `None`. When proofreading a range, pass the facts of the whole
     /// document.
     pub facts: Option<ProjectFacts>,
+    /// Let the decision model (Jev) screen paragraphs so the chat model
+    /// reads only the ones likely to have a mistake. Ignored without Jev.
+    pub screen: bool,
 }
 
 impl Default for ProofOptions {
@@ -55,6 +69,7 @@ impl Default for ProofOptions {
             categories: Category::ALL.to_vec(),
             use_model: true,
             facts: None,
+            screen: true,
         }
     }
 }
@@ -63,6 +78,7 @@ impl Default for ProofOptions {
 #[serde(rename_all = "lowercase")]
 pub enum ProofStage {
     Rules,
+    Screen,
     Model,
     Consistency,
     Citations,
@@ -115,6 +131,12 @@ pub struct ProofReport {
     pub sections: usize,
     pub cached_sections: usize,
     pub model_calls: usize,
+    /// Paragraphs the chat model did not read: too short to hold a typo, or
+    /// the same text as an earlier paragraph (whose findings they share).
+    pub skipped: usize,
+    /// Paragraphs the decision model cleared, and its requests.
+    pub screened_out: usize,
+    pub screen_calls: usize,
     /// Steps that failed (the rest of the report is still valid).
     pub failures: Vec<String>,
     /// Stopped by the user before the end.
@@ -126,7 +148,6 @@ pub struct ProofReport {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Cached {
     issues: Vec<Issue>,
-    facts: Vec<Fact>,
 }
 
 fn para_hash(p: &ProofParagraph) -> String {
@@ -225,32 +246,65 @@ impl Core {
             let chat = self.require(RoleName::Chat)?;
             let concurrency = self.settings()?.proofread.concurrency.max(1);
             if !model_checks.is_empty() {
-                let facts_found = self
-                    .proof_sections(
-                        paras,
-                        &facts,
-                        &model_checks,
-                        options,
-                        &chat,
-                        concurrency,
-                        &mut issues,
-                        &mut report,
-                        &progress,
-                        cancel,
-                    )
-                    .await?;
-                if wants(Category::Consistency) && !cancel.load(Ordering::Relaxed) {
-                    self.proof_consistency(
-                        paras,
-                        &facts_found,
-                        options,
-                        &chat,
-                        &mut issues,
-                        &mut report,
-                        &progress,
-                    )
-                    .await?;
+                let (mut to_read, copies) = screen::distinct(paras);
+                report.skipped = paras.len() - to_read.len();
+                if options.screen
+                    && let Some(gate) = self.gate_target()?
+                {
+                    to_read = self
+                        .proof_screen(
+                            to_read,
+                            &facts,
+                            &gate,
+                            options,
+                            concurrency,
+                            &mut report,
+                            &progress,
+                            cancel,
+                        )
+                        .await?;
                 }
+                let before = issues.len();
+                self.proof_sections(
+                    &to_read,
+                    &facts,
+                    &model_checks,
+                    options,
+                    &chat,
+                    concurrency,
+                    &mut issues,
+                    &mut report,
+                    &progress,
+                    cancel,
+                )
+                .await?;
+                // Repeated paragraphs share the findings of the first one.
+                let copied: Vec<Issue> = copies
+                    .iter()
+                    .flat_map(|&(copy, orig)| {
+                        issues[before..]
+                            .iter()
+                            .filter(move |i| i.paragraph == orig && i.source == Source::Model)
+                            .map(move |i| Issue {
+                                paragraph: copy,
+                                ..i.clone()
+                            })
+                    })
+                    .collect();
+                issues.extend(copied);
+            }
+            if wants(Category::Consistency) && !cancel.load(Ordering::Relaxed) {
+                let figures = screen::extract_figures(paras);
+                self.proof_consistency(
+                    paras,
+                    &figures,
+                    options,
+                    &chat,
+                    &mut issues,
+                    &mut report,
+                    &progress,
+                )
+                .await?;
             }
             if check_citations
                 && !cancel.load(Ordering::Relaxed)
@@ -283,7 +337,141 @@ impl Core {
         Ok(report)
     }
 
-    /// The section checks; returns every figure found (cached or new).
+    /// The decision model for screening: only Jev, since a chat model
+    /// answering for it would be as slow as reading the text.
+    fn gate_target(&self) -> Result<Option<Target>> {
+        if self.settings()?.roles.decision_backend != DecisionBackend::Jev {
+            return Ok(None);
+        }
+        self.target(RoleName::Decision)
+    }
+
+    /// Asks the decision model, a batch of paragraphs at a time, how likely
+    /// each is to hold a mistake, and returns the ones worth reading.
+    /// Paragraphs it could not judge are kept.
+    #[allow(clippy::too_many_arguments)]
+    async fn proof_screen(
+        &self,
+        paras: Vec<ProofParagraph>,
+        facts: &ProjectFacts,
+        gate: &Target,
+        options: &ProofOptions,
+        concurrency: usize,
+        report: &mut ProofReport,
+        progress: &(impl Fn(ProofProgress) + Send + Sync),
+        cancel: &AtomicBool,
+    ) -> Result<Vec<ProofParagraph>> {
+        let key = format!(
+            "{CACHE_VERSION}|gate|{}|{}",
+            gate.model,
+            hash(&[&facts.prompt_text()])
+        );
+        let hashes: Vec<String> = paras.iter().map(para_hash).collect();
+        let cached = self.store().proofread_cached(
+            &options.doc_key,
+            &hashes,
+            &key,
+            now() - CACHE_DAYS * 86_400,
+        )?;
+        let mut p_yes: HashMap<usize, f32> = HashMap::new();
+        // Positions in `paras`; the futures borrow nothing else.
+        let mut batches: Vec<Vec<usize>> = Vec::new();
+        let mut size = 0;
+        for (i, (p, h)) in paras.iter().zip(&hashes).enumerate() {
+            if let Some(v) = cached.get(h).and_then(|v| v.parse().ok()) {
+                p_yes.insert(p.index, v);
+                continue;
+            }
+            let len = p.text.chars().count();
+            match batches.last_mut() {
+                Some(b) if b.len() < GATE_BATCH && size + len <= GATE_CHARS => {
+                    b.push(i);
+                    size += len;
+                }
+                _ => {
+                    batches.push(vec![i]);
+                    size = len;
+                }
+            }
+        }
+        let total = batches.len();
+        let mut done = 0;
+        progress(ProofProgress::step(ProofStage::Screen, done, total));
+        let paras_ref = &paras;
+        let mut stream = futures::stream::iter(batches)
+            .map(|batch| async move {
+                let members: Vec<&ProofParagraph> = batch.iter().map(|&i| &paras_ref[i]).collect();
+                if cancel.load(Ordering::Relaxed) {
+                    return (members, None);
+                }
+                let questions: Vec<Question> = members
+                    .iter()
+                    .map(|p| {
+                        Question::yes_no(format!("p{}", p.index), model::gate_question(p.index))
+                    })
+                    .collect();
+                let answers = self
+                    .client()
+                    .decide(
+                        &gate.provider,
+                        &gate.model,
+                        &model::gate_state(facts, &members),
+                        &questions,
+                    )
+                    .await;
+                (members, Some(answers))
+            })
+            // Answers are a few numbers, so it takes more requests at once.
+            .buffer_unordered((concurrency * 2).min(16));
+        let mut failed = 0;
+        let mut first_error = None;
+        while let Some((members, answers)) = stream.next().await {
+            let Some(answers) = answers else { continue };
+            report.screen_calls += 1;
+            done += 1;
+            progress(ProofProgress::step(ProofStage::Screen, done, total));
+            let answers = match answers {
+                Ok(a) => a,
+                Err(e) => {
+                    failed += 1;
+                    first_error.get_or_insert(e.to_string());
+                    continue;
+                }
+            };
+            let mut entries = Vec::new();
+            for p in &members {
+                let key = format!("p{}", p.index);
+                let Some(v) = answers
+                    .iter()
+                    .find(|a| a.key == key)
+                    .and_then(|a| match a.value {
+                        AnswerValue::YesNo { p_yes } => Some(p_yes),
+                        _ => None,
+                    })
+                else {
+                    continue;
+                };
+                p_yes.insert(p.index, v);
+                entries.push((para_hash(p), v.to_string()));
+            }
+            self.store()
+                .save_proofread_cache(&options.doc_key, &key, &entries)?;
+        }
+        drop(stream);
+        if let Some(e) = first_error {
+            report.failures.push(format!(
+                "决策模型初筛有 {failed} 批失败，这些段落改为逐段通读：{e}"
+            ));
+        }
+        let keep: Vec<ProofParagraph> = paras
+            .into_iter()
+            .filter(|p| p_yes.get(&p.index).is_none_or(|&v| v >= GATE_THRESHOLD))
+            .collect();
+        report.screened_out = hashes.len() - keep.len();
+        Ok(keep)
+    }
+
+    /// The section checks.
     #[allow(clippy::too_many_arguments)]
     async fn proof_sections(
         &self,
@@ -297,9 +485,8 @@ impl Core {
         report: &mut ProofReport,
         progress: &(impl Fn(ProofProgress) + Send + Sync),
         cancel: &AtomicBool,
-    ) -> Result<Vec<Fact>> {
-        let want_facts = checks.contains(&Category::Consistency);
-        let head = model::check_prompt(facts, &[], want_facts);
+    ) -> Result<()> {
+        let head = model::check_prompt(facts, &[]);
         let budget = (chat.profile.context_window as usize * 6 / 10)
             .saturating_sub(
                 estimate_tokens(model::CHECK_SYSTEM)
@@ -329,7 +516,6 @@ impl Core {
             now() - CACHE_DAYS * 86_400,
         )?;
 
-        let mut found_facts = Vec::new();
         let mut found_issues = Vec::new();
         let mut todo = Vec::new();
         let total = sections.len();
@@ -351,10 +537,6 @@ impl Core {
                 found_issues.extend(c.issues.into_iter().map(|mut x| {
                     x.paragraph = p.index;
                     x
-                }));
-                found_facts.extend(c.facts.into_iter().map(|mut f| {
-                    f.paragraph = p.index;
-                    f
                 }));
             }
         }
@@ -378,7 +560,7 @@ impl Core {
                 if cancel.load(Ordering::Relaxed) {
                     return (members, None);
                 }
-                let user = model::check_prompt(facts, &members, want_facts);
+                let user = model::check_prompt(facts, &members);
                 let answer = self.proof_ask(chat, model::CHECK_SYSTEM, user).await;
                 (members, Some(answer))
             })
@@ -392,7 +574,7 @@ impl Core {
                     .ok_or_else(|| "模型没有返回校对 JSON".to_string()),
                 Err(e) => Err(e.to_string()),
             };
-            let (new_issues, new_facts) = match parsed {
+            let (new_issues, _) = match parsed {
                 Ok(found) => found,
                 Err(e) => {
                     report
@@ -410,9 +592,6 @@ impl Core {
             for x in &new_issues {
                 per.entry(x.paragraph).or_default().issues.push(x.clone());
             }
-            for f in &new_facts {
-                per.entry(f.paragraph).or_default().facts.push(f.clone());
-            }
             let entries: Vec<(String, String)> = members
                 .iter()
                 .map(|p| {
@@ -423,9 +602,8 @@ impl Core {
             self.store()
                 .save_proofread_cache(&options.doc_key, &checks_key, &entries)?;
             issues.extend(new_issues);
-            found_facts.extend(new_facts);
         }
-        Ok(found_facts)
+        Ok(())
     }
 
     /// Compares figures across the document and asks the model which

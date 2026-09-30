@@ -617,6 +617,8 @@ export interface ProofOptions {
   useModel: boolean;
   /** The project facts to check against; null extracts them from the document. */
   facts: ProjectFacts | null;
+  /** Let the decision model (Jev) pick the paragraphs the chat model reads. */
+  screen?: boolean;
 }
 
 export interface ProofReport {
@@ -627,6 +629,11 @@ export interface ProofReport {
   sections: number;
   cachedSections: number;
   modelCalls: number;
+  /** Paragraphs not read: too short, or repeating an earlier one. */
+  skipped: number;
+  /** Paragraphs the decision model cleared, and its requests. */
+  screenedOut: number;
+  screenCalls: number;
   failures: string[];
   cancelled: boolean;
   /** Text of each paragraph with an issue, as checked. */
@@ -635,7 +642,7 @@ export interface ProofReport {
 
 export interface ProofProgress {
   docId: number;
-  stage: "rules" | "model" | "consistency" | "citations" | "done";
+  stage: "rules" | "screen" | "model" | "consistency" | "citations" | "done";
   done: number;
   total: number;
   /** Findings of the step that just finished; the final report supersedes them. */

@@ -1,11 +1,12 @@
 //! Document proofreading (文档校对): the self-check before a report is
 //! handed in, as opposed to fixing reviewers' comments.
 //!
-//! Rules settle what they can (format, numbering, place names, the list of
-//! cited documents), fast and free; the chat model reads the text in
-//! sections for typos and statements that contradict the project, and pulls
-//! out figures so that conflicting ones can be compared locally and then
-//! confirmed. Every model finding must quote the paragraph verbatim or it is
+//! Rules settle what they can (format, numbering, place names, a list of
+//! wrong words, the key figures and the cited documents), fast and free;
+//! the decision model screens paragraphs, and the chat model reads the ones
+//! it flags (or all of them) in sections for typos and statements that
+//! contradict the project. Conflicting figures are compared locally and
+//! then confirmed by the chat model. Every model finding must quote the paragraph verbatim or it is
 //! dropped. See `docs/technical-design.md` §13.9.
 
 mod apply;
@@ -15,6 +16,7 @@ pub mod facts;
 pub mod model;
 pub mod rules;
 mod run;
+pub mod screen;
 
 use docx_engine::{Block, Document};
 use serde::{Deserialize, Serialize};
@@ -300,6 +302,9 @@ pub fn check_rules(
     let mut out = Vec::new();
     if categories.contains(&Category::Format) {
         out.extend(rules::check_format(paras));
+    }
+    if categories.contains(&Category::Typo) {
+        out.extend(screen::check_typo_words(paras));
     }
     if categories.contains(&Category::Numbering) {
         out.extend(rules::check_numbering(paras));

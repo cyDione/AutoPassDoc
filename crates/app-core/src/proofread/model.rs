@@ -1,7 +1,8 @@
-//! What the chat model is asked during proofreading, and how its answers
-//! are read: the section check (typos, statements that contradict the
-//! project, figures), the confirmation of conflicting figures, and the
-//! status of a cited document given web search results.
+//! What the models are asked during proofreading, and how their answers
+//! are read: the decision model's screening of paragraphs, the section
+//! check (typos, statements that contradict the project), the confirmation
+//! of conflicting figures, and the status of a cited document given web
+//! search results.
 
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -111,26 +112,44 @@ pub const CHECK_SYSTEM: &str = "你是一名严谨的中文公文和工程咨询
 - reason 用一句话说明错在哪里。
 - 不要改动风格、不要润色、不要改标点和空格（另有规则检查）。
 
-同时抽取“关键指标”（用于检查全文前后是否一致）：只要项目或其组成部分的总投资、分项投资、建设规模、占地面积、建筑面积、长度、处理能力、建设工期、开竣工日期这类会在全文多处出现的指标。不要抽取单价、明细数量、序号、页码、年份、标准编号和一般统计数据。
-- 每条写成数组 [段号, \"主体\", \"指标名\", \"数值\", \"单位\"]：主体如“项目”“一期工程”“污水处理厂”，指标名如“总投资”“占地面积”，数值用阿拉伯数字。
-
 只输出一个 JSON 对象，不要解释：
-{\"issues\": [{\"p\": 段号, \"original\": \"原文片段\", \"suggestion\": \"改正后片段\", \"category\": \"typo\", \"reason\": \"理由\"}],
- \"facts\": [[段号, \"项目\", \"总投资\", \"3.2\", \"亿元\"]]}
-没有问题时 issues 为空数组；没有关键指标或不需要抽取时 facts 为空数组。";
+{\"issues\": [{\"p\": 段号, \"original\": \"原文片段\", \"suggestion\": \"改正后片段\", \"category\": \"typo\", \"reason\": \"理由\"}]}
+没有问题时 issues 为空数组。";
+
+/// What the decision model sees when screening: project facts, then
+/// numbered paragraphs.
+pub fn gate_state(facts: &ProjectFacts, paras: &[&ProofParagraph]) -> String {
+    let mut s = String::from(
+        "以下是一份中文公文或工程咨询报告的若干段落，需要判断哪些段落值得交给校对员细读。\n",
+    );
+    let known = facts.prompt_text();
+    if !known.is_empty() {
+        s.push_str("【项目要素】\n");
+        s.push_str(&known);
+    }
+    s.push_str("【段落】（方括号内是段号）\n");
+    for p in paras {
+        s.push_str(&format!("[{}] {}\n", p.index, p.text.trim_end()));
+    }
+    s
+}
+
+/// The screening question for one paragraph.
+pub fn gate_question(index: usize) -> String {
+    format!(
+        "第[{index}]段是否可能含有错别字、多字漏字、的地得误用、用词不当、明显语病、同段前后矛盾，或与【项目要素】不符的项目名称、地名、单位名称？"
+    )
+}
 
 /// The user message for one section: project facts, then numbered
 /// paragraphs.
-pub fn check_prompt(facts: &ProjectFacts, paras: &[&ProofParagraph], want_facts: bool) -> String {
+pub fn check_prompt(facts: &ProjectFacts, paras: &[&ProofParagraph]) -> String {
     let mut s = String::new();
     let known = facts.prompt_text();
     if !known.is_empty() {
         s.push_str("【项目要素】\n");
         s.push_str(&known);
         s.push('\n');
-    }
-    if !want_facts {
-        s.push_str("（本次不需要抽取指标事实，facts 返回空数组。）\n\n");
     }
     s.push_str("【待校对段落】（方括号内是段号）\n");
     for p in paras {

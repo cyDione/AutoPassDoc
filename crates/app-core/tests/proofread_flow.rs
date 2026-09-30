@@ -434,3 +434,140 @@ async fn applies_issues_as_one_tracked_change() {
     assert_eq!(doc.undo_label(), Some(proofread::PROOFREAD_LABEL));
     assert!(core.apply_proof_issues(&mut doc, &issues[1..]).is_err());
 }
+
+/// Jev: "yes" for paragraphs holding 竟, "no" for the rest.
+struct JevGate;
+
+impl wiremock::Respond for JevGate {
+    fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+        let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+        let state = body["state"].as_str().unwrap();
+        let answers: serde_json::Map<String, serde_json::Value> = body["questions"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| {
+                let line = format!("[{}] ", &k[1..]);
+                let flagged = state
+                    .lines()
+                    .any(|l| l.starts_with(&line) && l.contains('竟'));
+                let p = if flagged { 0.9 } else { 0.03 };
+                (k.clone(), json!({"type": "noul", "noul": p}))
+            })
+            .collect();
+        ResponseTemplate::new(200).set_body_json(json!({ "answers": answers }))
+    }
+}
+
+#[tokio::test]
+async fn decision_model_screens_what_the_chat_model_reads() {
+    let server = MockServer::start().await;
+    mount(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(JevGate)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let core = core(dir.path(), &server, true);
+    {
+        let store = core.store();
+        let mut s = store.settings().unwrap();
+        s.roles.decision = RoleModel {
+            provider_id: "gw".into(),
+            model: "jev-latest".into(),
+            thinking: String::new(),
+        };
+        store.save_settings(&s).unwrap();
+    }
+    let mut doc = input("");
+    let clean = "本工程管网采用球墨铸铁管，接口为承插式橡胶圈接口。";
+    let typo = doc.paragraphs[4].text.clone();
+    doc.paragraphs.extend([
+        ProofParagraph::new(9, clean),
+        ProofParagraph::new(10, "12.5"),
+        ProofParagraph::new(11, typo.clone()),
+        ProofParagraph::new(12, "统一布署，分期实施。"),
+    ]);
+    let options = ProofOptions {
+        doc_key: "报告.docx".into(),
+        ..Default::default()
+    };
+    let cancel = AtomicBool::new(false);
+    let stages = Mutex::new(Vec::<ProofStage>::new());
+    let report = core
+        .proofread(
+            &doc,
+            &options,
+            None,
+            |p| stages.lock().unwrap().push(p.stage),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert!(stages.lock().unwrap().contains(&ProofStage::Screen));
+    // "12.5" is too short and paragraph 11 repeats paragraph 4.
+    assert_eq!(report.skipped, 2);
+    assert!(report.screen_calls >= 1);
+    assert_eq!(report.screened_out, 10, "all but paragraph 4");
+    assert_eq!(
+        requests_containing(&server, clean).await,
+        1,
+        "only Jev saw it"
+    );
+    // The typo is found in both copies; the word list catches 布署.
+    let typos: Vec<(usize, &str)> = report
+        .issues
+        .iter()
+        .filter(|i| i.category == Category::Typo)
+        .map(|i| (i.paragraph, i.original.as_str()))
+        .collect();
+    assert_eq!(typos, [(4, "水环竟"), (11, "水环竟"), (12, "布署")]);
+    // Conflicting figures come from the text itself.
+    assert_eq!(
+        report.counts["consistency"], 3,
+        "paragraph 11 repeats the figure"
+    );
+
+    // Screening results are cached with the paragraphs.
+    let jev_calls = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path().ends_with("systemone"))
+        .count();
+    let again = core
+        .proofread(&doc, &options, None, |_| {}, &cancel)
+        .await
+        .unwrap();
+    assert_eq!(again.screen_calls, 0);
+    assert_eq!(again.screened_out, 10);
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().ends_with("systemone"))
+            .count(),
+        jev_calls
+    );
+
+    // Reading everything skips Jev.
+    let full = core
+        .proofread(
+            &doc,
+            &ProofOptions {
+                screen: false,
+                ..options.clone()
+            },
+            None,
+            |_| {},
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert_eq!(full.screen_calls, 0);
+    assert_eq!(full.screened_out, 0);
+}
