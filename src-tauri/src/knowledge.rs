@@ -120,10 +120,14 @@ pub async fn kb_import(
     Ok(reports)
 }
 
-/// Looks something up on the web (the chat model's search, else the whitelist).
+/// Looks something up on the web (the chat model's search, else the search
+/// engines with AI-written terms and AI screening, whitelisted sites first).
 #[tauri::command]
-pub async fn web_search(query: String, core: CoreState<'_>) -> Res<app_core::web::SearchOutcome> {
-    core.web_search(&query).await.map_err(err)
+pub async fn web_search(
+    request: app_core::web::LookupRequest,
+    core: CoreState<'_>,
+) -> Res<app_core::web::SearchOutcome> {
+    core.web_lookup(&request).await.map_err(err)
 }
 
 /// Downloads a file from the search results into the knowledge base.

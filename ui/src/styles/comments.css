@@ -702,6 +702,23 @@
   color: var(--text-2);
 }
 
+.web-result .snippet.reason {
+  color: var(--text);
+}
+
+.web-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.web-group .group-label {
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
 .web-result .row {
   display: flex;
   flex-wrap: wrap;

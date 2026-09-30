@@ -68,9 +68,12 @@ impl CitationLookup for Core {
                 .unwrap_or_default();
             let query = format!("《{}》 {number} 废止 修订 最新版", citation.title);
             let outcome = self.web_search(&query).await?;
+            // Search engine results off the whitelist are not authoritative.
+            let local = outcome.via == "local";
             Ok(outcome
                 .results
                 .into_iter()
+                .filter(|r| r.trusted || !local)
                 .map(|r| SearchSnippet {
                     title: r.title,
                     url: r.url,

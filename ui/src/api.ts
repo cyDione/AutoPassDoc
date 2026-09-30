@@ -41,6 +41,7 @@ import type {
   UpdateInfo,
   UpdateProgress,
   ReleaseAsset,
+  WebLookup,
   WebSearchOutcome,
 } from "./types";
 
@@ -186,7 +187,7 @@ export interface Backend {
 
   // Web
   /** Searches the web: the chat model's own search first, else whitelisted sites from this machine. */
-  webSearch(query: string): Promise<WebSearchOutcome>;
+  webSearch(request: WebLookup): Promise<WebSearchOutcome>;
   /** Downloads a file from the last search results and imports it into the knowledge base. */
   webDownloadToKb(url: string): Promise<KbImportReport>;
 
@@ -376,7 +377,7 @@ async function tauriBackend(): Promise<Backend> {
     cancelUpdateDownload: () => invoke("cancel_update_download"),
     installUpdate: (path) => invoke("install_update", { path }),
     onUpdateProgress: (handler) => subscribe<UpdateProgress>("update-progress", handler),
-    webSearch: (query) => invoke("web_search", { query }),
+    webSearch: (request) => invoke("web_search", { request }),
     webDownloadToKb: (url) => invoke("web_download_to_kb", { url }),
 
     confirm: (message, title, okLabel) =>
