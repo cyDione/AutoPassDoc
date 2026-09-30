@@ -185,6 +185,8 @@ export interface Backend {
   // Window
   /** Asks the user to confirm a destructive step; resolves true to go ahead. */
   confirm(message: string, title: string, okLabel: string): Promise<boolean>;
+  /** Asks whether to save unsaved changes before they would be lost. */
+  askSave(message: string, title: string): Promise<"save" | "discard" | "cancel">;
   /** Runs `allow` when the user closes the window; the window stays open when it resolves false. */
   onCloseRequested(allow: () => Promise<boolean>): Unsubscribe;
 }
@@ -367,6 +369,14 @@ async function tauriBackend(): Promise<Backend> {
 
     confirm: (message, title, okLabel) =>
       dialog.confirm(message, { title, kind: "warning", okLabel, cancelLabel: "取消" }),
+    async askSave(message, title) {
+      const buttons = { yes: "保存", no: "不保存", cancel: "取消" };
+      const choice = await dialog.message(message, { title, kind: "warning", buttons });
+      // Custom buttons come back as their labels on some platforms and as Yes/No on others.
+      if (choice === "Yes" || choice === buttons.yes) return "save";
+      if (choice === "No" || choice === buttons.no) return "discard";
+      return "cancel";
+    },
     onCloseRequested(allow) {
       let unlisten: (() => void) | null = null;
       let cancelled = false;

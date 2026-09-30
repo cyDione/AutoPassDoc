@@ -177,7 +177,7 @@ export const MarginComments = memo(function MarginComments({
       const x0 = Math.round(r.right - origin.left);
       const y0 = Math.round(r.top + r.height / 2 - origin.top);
       const y1 = Math.round(tops[a] + 18);
-      connector = `${x0},${y0} -14,${y0} 0,${y1}`;
+      connector = `${x0},${y0} -6,${y0} 0,${y1}`;
     }
 
     const next: Layout = { shown, bottom: Math.round(bottom), connector };

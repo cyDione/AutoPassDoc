@@ -724,25 +724,26 @@
 }
 
 /*
- * The page and the margin are centred together: --side is the free space on
- * each side, the page keeps at most 820px and the margin takes --mw.
+ * The page and its markup area are one sheet, centred together as in Word's
+ * print layout. The markup area grows into spare width (up to 440px) before
+ * any is left over as grey space on both sides, and shrinks to 240px in a
+ * narrow window; --side is what is left on each side.
  */
 .doc-scroll.with-margin {
-  --mw: clamp(250px, 30%, 340px);
-  --mg: 14px;
-  --side: max(14px, calc((100% - 820px - var(--mw) - var(--mg)) / 2));
+  --mw: clamp(240px, max(34%, 100% - 820px - 48px), 440px);
+  --side: max(14px, calc((100% - 820px - var(--mw)) / 2));
 }
 
 .with-margin .block-inner {
   max-width: none;
   margin-left: var(--side);
-  margin-right: calc(var(--side) + var(--mw) + var(--mg));
-  padding: 0 44px 0 56px;
+  margin-right: calc(var(--side) + var(--mw));
+  padding: 0 40px 0 56px;
 }
 
 :root[data-theme="word"] .with-margin .doc-canvas::before {
   left: var(--side);
-  width: calc(100% - 2 * var(--side) - var(--mw) - var(--mg));
+  width: calc(100% - 2 * var(--side));
   transform: none;
 }
 
@@ -753,17 +754,26 @@
   right: var(--side);
   width: var(--mw);
   z-index: 1;
+  container-type: inline-size;
+  container-name: margin;
 }
 
-/* A faint rule marks where the margin starts, as in Word's markup area. */
+/* Word's markup area: a tinted strip along the page's right edge. */
 .doc-margin::before {
   content: "";
   position: absolute;
   top: 0;
   bottom: 0;
-  left: calc(var(--mg) / -2);
+  left: 0;
+  right: 0;
   border-left: 1px solid var(--border);
-  opacity: 0.7;
+  background: color-mix(in srgb, var(--surface-2) 45%, transparent);
+}
+
+:root[data-theme="word"] .doc-margin::before {
+  top: 20px;
+  bottom: 60px;
+  background: #f7f6f5;
 }
 
 .doc-margin-bar {
@@ -775,15 +785,15 @@
 .doc-margin-cards {
   position: absolute;
   top: 0;
-  left: 0;
-  right: 0;
+  left: 12px;
+  right: 12px;
 }
 
 .margin-bar {
   display: flex;
   flex-direction: column;
   gap: 7px;
-  padding: 10px 2px 8px;
+  padding: 10px 12px 8px;
   background: color-mix(in srgb, var(--bg) 90%, transparent);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
@@ -830,6 +840,18 @@
 .margin-bar .icon-btn {
   position: relative;
   flex: none;
+}
+
+.margin-bar .btn {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* A narrow markup area keeps the controls and drops the counts. */
+@container margin (max-width: 300px) {
+  .margin-bar .count {
+    display: none;
+  }
 }
 
 .margin-bar .icon-btn .dot {

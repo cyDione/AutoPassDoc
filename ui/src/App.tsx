@@ -29,7 +29,7 @@ export default function App() {
   const [backend, setBackend] = useState<Backend | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const notify = useCallback((text: string, error?: boolean) => setToast({ text, error }), []);
-  const { doc, docState, version, authors, setAuthors, loading, load, edit, undo, redo, save, saveAs } = useDocumentSession(backend, notify);
+  const { doc, docState, version, authors, setAuthors, loading, load, edit, undo, redo, save, saveAs, close, saveAndClose } = useDocumentSession(backend, notify);
   const [theme, setTheme] = useTheme();
   const [commentLayout, setCommentLayout] = useCommentLayout();
   const marginLayout = commentLayout === "margin";
@@ -105,6 +105,15 @@ export default function App() {
 
   const openPicker = useCallback(() => backend && openDoc(() => backend.pickAndOpen()), [backend, openDoc]);
 
+  const afterClose = useCallback((closed: boolean) => {
+    if (!closed) return;
+    setActiveCommentId(null);
+    setTarget(null);
+    setTopBlock(0);
+  }, []);
+  const closeDoc = useCallback(() => void close().then(afterClose), [close, afterClose]);
+  const saveAndCloseDoc = useCallback(() => void saveAndClose().then(afterClose), [saveAndClose, afterClose]);
+
   useEffect(() => {
     if (!backend) return;
     void backend.initialFile().then((path) => {
@@ -132,9 +141,9 @@ export default function App() {
   }, [backend, openDoc]);
 
   // Shortcuts read the latest state through a ref so the listener is added once.
-  const shortcuts = useRef({ openPicker, save, saveAs, undo, redo, page, docState, settingsOpen: false });
+  const shortcuts = useRef({ openPicker, save, saveAs, closeDoc, undo, redo, page, docState, settingsOpen: false });
   useEffect(() => {
-    shortcuts.current = { openPicker, save, saveAs, undo, redo, page, docState, settingsOpen: settingsTab !== null };
+    shortcuts.current = { openPicker, save, saveAs, closeDoc, undo, redo, page, docState, settingsOpen: settingsTab !== null };
   });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -148,6 +157,9 @@ export default function App() {
       } else if (key === "s") {
         e.preventDefault();
         void (e.shiftKey ? s.saveAs() : s.save());
+      } else if (key === "w") {
+        e.preventDefault();
+        s.closeDoc();
       } else if ((key === "z" || key === "y") && s.page === "doc" && !isTyping(e.target)) {
         e.preventDefault();
         const redoing = key === "y" || e.shiftKey;
@@ -292,6 +304,8 @@ export default function App() {
           onRedo={redo}
           onSave={save}
           onSaveAs={saveAs}
+          onSaveAndClose={saveAndCloseDoc}
+          onClose={closeDoc}
         />
 
         <div className="workspace">

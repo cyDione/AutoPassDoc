@@ -1051,6 +1051,10 @@ export function createDemoBackend(): Backend {
     },
 
     confirm: async (message) => window.confirm(message),
+    async askSave(message) {
+      if (window.confirm(`${message}\n\n确定：保存；取消：选择是否放弃修改`)) return "save";
+      return window.confirm("不保存，直接关闭？") ? "discard" : "cancel";
+    },
     onCloseRequested: () => () => {},
   };
 }

@@ -1,7 +1,6 @@
 import { memo, useEffect, useRef } from "react";
 import { FileSearch, FileText, FolderOpen, Library, PanelLeftClose, Settings, Users } from "lucide-react";
 import type { OpenedDoc, OutlineItem } from "../types";
-import { formatChars } from "../util";
 
 export type Page = "doc" | "proofread" | "kb" | "reviewers";
 
@@ -64,16 +63,6 @@ export const Sidebar = memo(function Sidebar({
 
       {doc && (
         <>
-          <div className="side-section">当前文档</div>
-          <div className="doc-item" title={doc.path}>
-            <div className="name">
-              <FileText size={13} style={{ verticalAlign: -2, marginRight: 6 }} />
-              {doc.fileName}
-            </div>
-            <div className="meta">
-              {formatChars(doc.summary.charCount)} · {doc.summary.comments.filter((c) => !c.parentId).length} 条批注
-            </div>
-          </div>
           <div className="side-section">大纲</div>
           <div className="outline scroll" ref={listRef}>
             {outline.length === 0 && <div className="side-section">文档中没有标题</div>}

@@ -355,25 +355,6 @@ button {
   color: var(--text-3);
 }
 
-.doc-item {
-  margin: 0 8px;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  background: var(--active);
-}
-
-.doc-item .name {
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.doc-item .meta {
-  font-size: 12px;
-  color: var(--text-3);
-}
-
 .outline {
   flex: 1;
   min-height: 0;
@@ -994,7 +975,8 @@ button {
   color: #fff;
 }
 
-:root[data-theme="word"] .topbar .btn:hover {
+:root[data-theme="word"] .topbar .btn:hover,
+:root[data-theme="word"] .topbar .split-arrow.on {
   background: rgba(255, 255, 255, 0.22);
 }
 

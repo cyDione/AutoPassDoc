@@ -127,12 +127,13 @@ export function useDocumentSession(backend: Backend | null, notify: Notify) {
   const undo = useCallback(() => undoOrRedo("undo"), [undoOrRedo]);
   const redo = useCallback(() => undoOrRedo("redo"), [undoOrRedo]);
 
-  const saveAs = useCallback(async () => {
+  /** Resolves true once the document is written to disk. */
+  const saveAs = useCallback(async (): Promise<boolean> => {
     const current = docRef.current;
-    if (!backend || !current) return;
+    if (!backend || !current) return false;
     try {
       const path = await enqueue(() => backend.saveAs(current.docId));
-      if (!path) return;
+      if (!path) return false;
       // Like Word, the title now names the copy that 保存 writes to.
       const fileName = path.split(/[\\/]/).pop() || current.fileName;
       if (docRef.current?.docId === current.docId) {
@@ -140,24 +141,63 @@ export function useDocumentSession(backend: Backend | null, notify: Notify) {
         setDoc((d) => (d?.docId === current.docId ? { ...d, fileName } : d));
       }
       notify(`已另存为 ${path}`);
-      setDocState(await backend.docState(current.docId));
+      const state = await backend.docState(current.docId);
+      setDocState(state);
+      dirtyRef.current = state.dirty;
+      return true;
     } catch (e) {
       notify(`保存失败：${errorMessage(e)}`, true);
+      return false;
     }
   }, [backend, enqueue, notify]);
 
-  const save = useCallback(async () => {
+  const save = useCallback(async (): Promise<boolean> => {
     const current = docRef.current;
-    if (!backend || !current) return;
+    if (!backend || !current) return false;
     if (!docState?.savedPath) return saveAs();
     try {
       const state = await enqueue(() => backend.save(current.docId));
       setDocState(state);
+      dirtyRef.current = state.dirty;
       notify(`已保存到 ${state.savedPath ?? docState.savedPath}`);
+      return true;
     } catch (e) {
       notify(`保存失败：${errorMessage(e)}`, true);
+      return false;
     }
   }, [backend, docState, enqueue, notify, saveAs]);
 
-  return { doc, docState, version, authors, setAuthors, loading, load, edit, undo, redo, save, saveAs };
+  const drop = useCallback(() => {
+    const current = docRef.current;
+    if (!backend || !current) return;
+    void backend.close(current.docId);
+    docRef.current = null;
+    dirtyRef.current = false;
+    setDoc(null);
+    setDocState(null);
+    setAuthors([]);
+  }, [backend]);
+
+  /** Closes the document, asking first whether to save unsaved changes. Resolves true once it is closed. */
+  const close = useCallback(async (): Promise<boolean> => {
+    const current = docRef.current;
+    if (!backend || !current) return false;
+    if (dirtyRef.current) {
+      const choice = await backend.askSave(`“${current.fileName}”有未保存的修改，关闭前要保存吗？`, "关闭文档");
+      if (choice === "cancel") return false;
+      if (choice === "save" && !(await save())) return false;
+    }
+    // Edits still running would land on a closed document.
+    await queue.current;
+    if (docRef.current?.docId !== current.docId) return false;
+    drop();
+    return true;
+  }, [backend, save, drop]);
+
+  const saveAndClose = useCallback(async (): Promise<boolean> => {
+    if (!(await save())) return false;
+    return close();
+  }, [save, close]);
+
+  return { doc, docState, version, authors, setAuthors, loading, load, edit, undo, redo, save, saveAs, close, saveAndClose };
 }
