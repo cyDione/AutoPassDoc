@@ -14,6 +14,7 @@ pub mod profiles;
 pub mod proofread;
 pub mod providers;
 pub mod reviewers;
+pub mod search_api;
 pub mod secrets;
 pub mod settings;
 pub mod store;

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use app_core::Core;
 use app_core::enhanced::{ParserInfo, ParserTest};
 use app_core::knowledge::{HitView, ImportResult, StatsView};
+use app_core::search_api::{SearchService, SearchServiceInfo};
 use app_core::settings::ParserKind;
 use kb::{DocMeta, KbDocument};
 use serde::Serialize;
@@ -139,6 +140,23 @@ pub async fn web_download_to_kb(
 ) -> Res<ImportResult> {
     let core = core.inner().clone();
     let report = core.web_download_to_kb(&url).await.map_err(err)?;
+    Ok(embed_new(app, core, report))
+}
+
+/// Saves a whitelisted result page's text into the knowledge base.
+#[tauri::command]
+pub async fn web_save_page_to_kb(
+    url: String,
+    app: AppHandle,
+    core: CoreState<'_>,
+) -> Res<ImportResult> {
+    let core = core.inner().clone();
+    let report = core.web_save_page_to_kb(&url).await.map_err(err)?;
+    Ok(embed_new(app, core, report))
+}
+
+/// Starts embedding a newly imported document when an embedding model is set.
+fn embed_new(app: AppHandle, core: Arc<Core>, report: ImportResult) -> ImportResult {
     if report.doc_id.is_some()
         && !report.unchanged
         && core
@@ -149,7 +167,7 @@ pub async fn web_download_to_kb(
     {
         embed_later(app, core);
     }
-    Ok(report)
+    report
 }
 
 #[tauri::command]
@@ -232,4 +250,38 @@ pub async fn test_parser(
     core.test_parser(kind, key.as_deref().filter(|k| !k.trim().is_empty()))
         .await
         .map_err(err)
+}
+
+/// The search APIs (智谱 / 博查 / Tavily) and whether each has a key.
+#[tauri::command]
+pub async fn search_services(core: CoreState<'_>) -> Res<Vec<SearchServiceInfo>> {
+    let core = core.inner().clone();
+    blocking(move || core.search_services().map_err(err)).await
+}
+
+#[tauri::command]
+pub async fn set_search_key(
+    kind: SearchService,
+    key: String,
+    core: CoreState<'_>,
+) -> Res<Vec<SearchServiceInfo>> {
+    let core = core.inner().clone();
+    blocking(move || {
+        core.set_search_key(kind, &key).map_err(err)?;
+        core.search_services().map_err(err)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn clear_search_key(
+    kind: SearchService,
+    core: CoreState<'_>,
+) -> Res<Vec<SearchServiceInfo>> {
+    let core = core.inner().clone();
+    blocking(move || {
+        core.clear_search_key(kind).map_err(err)?;
+        core.search_services().map_err(err)
+    })
+    .await
 }

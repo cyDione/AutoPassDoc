@@ -1,7 +1,8 @@
-//! What the chat model is asked during proofreading, and how its answers
-//! are read: the section check (typos, statements that contradict the
-//! project, figures), the confirmation of conflicting figures, and the
-//! status of a cited document given web search results.
+//! What the models are asked during proofreading, and how their answers
+//! are read: the decision model's screening of paragraphs, the section
+//! check (typos, statements that contradict the project), the confirmation
+//! of conflicting figures, and the status of a cited document given web
+//! search results.
 
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -111,26 +112,44 @@ pub const CHECK_SYSTEM: &str = "你是一名严谨的中文公文和工程咨询
 - reason 用一句话说明错在哪里。
 - 不要改动风格、不要润色、不要改标点和空格（另有规则检查）。
 
-同时抽取段落中的“指标事实”（用于检查全文前后是否一致）：总投资、建设规模、面积、长度、工期、日期、数量等有明确数值的说法。
-- subject：说的是谁（如“项目”“一期工程”“污水处理厂”），metric：指标名（如“总投资”“占地面积”“建设工期”），value：数值（阿拉伯数字），unit：单位，text：原文中包含该数值的最短片段（逐字摘录）。
+只输出一个 JSON 对象，不要解释：
+{\"issues\": [{\"p\": 段号, \"original\": \"原文片段\", \"suggestion\": \"改正后片段\", \"category\": \"typo\", \"reason\": \"理由\"}]}
+没有问题时 issues 为空数组。";
 
-只输出一个 JSON 对象：
-{\"issues\": [{\"p\": 段号, \"original\": \"原文片段\", \"suggestion\": \"改正后片段\", \"category\": \"typo\", \"reason\": \"理由\"}],
- \"facts\": [{\"p\": 段号, \"subject\": \"项目\", \"metric\": \"总投资\", \"value\": \"3.2\", \"unit\": \"亿元\", \"text\": \"总投资约3.2亿元\"}]}
-没有问题时 issues 为空数组；不需要抽取指标时 facts 为空数组。";
+/// What the decision model sees when screening: project facts, then
+/// numbered paragraphs.
+pub fn gate_state(facts: &ProjectFacts, paras: &[&ProofParagraph]) -> String {
+    let mut s = String::from(
+        "以下是一份中文公文或工程咨询报告的若干段落，需要判断哪些段落值得交给校对员细读。\n",
+    );
+    let known = facts.prompt_text();
+    if !known.is_empty() {
+        s.push_str("【项目要素】\n");
+        s.push_str(&known);
+    }
+    s.push_str("【段落】（方括号内是段号）\n");
+    for p in paras {
+        s.push_str(&format!("[{}] {}\n", p.index, p.text.trim_end()));
+    }
+    s
+}
+
+/// The screening question for one paragraph.
+pub fn gate_question(index: usize) -> String {
+    format!(
+        "第[{index}]段是否可能含有错别字、多字漏字、的地得误用、用词不当、明显语病、同段前后矛盾，或与【项目要素】不符的项目名称、地名、单位名称？"
+    )
+}
 
 /// The user message for one section: project facts, then numbered
 /// paragraphs.
-pub fn check_prompt(facts: &ProjectFacts, paras: &[&ProofParagraph], want_facts: bool) -> String {
+pub fn check_prompt(facts: &ProjectFacts, paras: &[&ProofParagraph]) -> String {
     let mut s = String::new();
     let known = facts.prompt_text();
     if !known.is_empty() {
         s.push_str("【项目要素】\n");
         s.push_str(&known);
         s.push('\n');
-    }
-    if !want_facts {
-        s.push_str("（本次不需要抽取指标事实，facts 返回空数组。）\n\n");
     }
     s.push_str("【待校对段落】（方括号内是段号）\n");
     for p in paras {
@@ -201,6 +220,14 @@ pub fn parse_check(text: &str, paras: &[&ProofParagraph]) -> Option<(Vec<Issue>,
     }
     let mut facts = Vec::new();
     for item in items(&v, "facts") {
+        // Compact form: [p, subject, metric, value, unit].
+        let item = match item {
+            Value::Array(a) => {
+                let keys = ["p", "subject", "metric", "value", "unit"];
+                Value::Object(keys.iter().map(|k| k.to_string()).zip(a).collect())
+            }
+            other => other,
+        };
         let Some(para) = find(&item) else { continue };
         let (Some(metric), Some(value)) = (
             str_field(&item, &["metric", "指标"]),
@@ -216,10 +243,17 @@ pub fn parse_check(text: &str, paras: &[&ProofParagraph]) -> Option<(Vec<Issue>,
             .unwrap_or("")
             .to_string();
         let quoted = str_field(&item, &["text", "original"]).unwrap_or("");
-        let text = [quoted.to_string(), format!("{value}{unit}"), value.clone()]
-            .into_iter()
-            .find(|t| !t.is_empty() && para.text.contains(t.as_str()))
-            .unwrap_or_default();
+        let text = [
+            quoted.to_string(),
+            format!("{metric}{value}{unit}"),
+            format!("{metric}约{value}{unit}"),
+            format!("{metric}为{value}{unit}"),
+            format!("{value}{unit}"),
+            value.clone(),
+        ]
+        .into_iter()
+        .find(|t| !t.is_empty() && para.text.contains(t.as_str()))
+        .unwrap_or_default();
         facts.push(Fact {
             paragraph: para.index,
             subject: str_field(&item, &["subject", "主体"])
@@ -766,7 +800,15 @@ mod tests {
         assert_eq!(facts.len(), 2);
         assert_eq!(facts[0].text, "总投资约3.2亿元");
         assert_eq!(facts[1].value, "24");
-        assert_eq!(facts[1].text, "24个月", "falls back to value + unit");
+        assert_eq!(
+            facts[1].text, "建设工期24个月",
+            "falls back to metric + value + unit"
+        );
+        // The compact form the prompt asks for.
+        let (_, facts) =
+            parse_check(r#"{"facts": [[3, "项目", "总投资", 3.2, "亿元"]]}"#, &paras).unwrap();
+        assert_eq!(facts[0].text, "总投资约3.2亿元");
+        assert_eq!(facts[0].subject, "项目");
         assert!(parse_check("没有 JSON", &paras).is_none());
         // A bare array is accepted as the issue list.
         let (issues, _) = parse_check(

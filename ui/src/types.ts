@@ -273,6 +273,12 @@ export interface Settings {
   };
   web: WebSettings;
   kb: KbSettings;
+  proofread: {
+    /** Parallel model requests while proofreading. */
+    concurrency: number;
+    /** Let the chat model think; slower. */
+    thinking: boolean;
+  };
 }
 
 /** Who reads PDFs and images into the knowledge base. */
@@ -319,6 +325,27 @@ export interface WebSettings {
   engine: "bing" | "baidu";
   /** Domains the local search may use, matched as suffixes. */
   whitelist: string[];
+  /** A keyed search API tried before scraping the search engines. */
+  service: SearchService;
+}
+
+export type SearchService = "none" | "zhipu" | "bocha" | "tavily";
+
+export interface SearchServiceInfo {
+  kind: Exclude<SearchService, "none">;
+  name: string;
+  hasKey: boolean;
+  keyUrl: string;
+  note: string;
+}
+
+/** What to write in place of a "【待补充…】", read off a whitelisted page. */
+export interface WebAnswer {
+  text: string;
+  /** The supporting sentence, found verbatim in the page. */
+  quote: string;
+  title: string;
+  url: string;
 }
 
 export type ProviderKind = "openai" | "openrouter" | "anthropic" | "ollama";
@@ -484,6 +511,7 @@ export interface WebSearchOutcome {
   notes: string[];
   /** The search terms used, the first one for the search box. */
   queries: string[];
+  answer: WebAnswer | null;
 }
 
 export interface BackupManifest {
@@ -603,6 +631,8 @@ export interface ProofOptions {
   useModel: boolean;
   /** The project facts to check against; null extracts them from the document. */
   facts: ProjectFacts | null;
+  /** Let the decision model (Jev) pick the paragraphs the chat model reads. */
+  screen?: boolean;
 }
 
 export interface ProofReport {
@@ -613,6 +643,11 @@ export interface ProofReport {
   sections: number;
   cachedSections: number;
   modelCalls: number;
+  /** Paragraphs not read: too short, or repeating an earlier one. */
+  skipped: number;
+  /** Paragraphs the decision model cleared, and its requests. */
+  screenedOut: number;
+  screenCalls: number;
   failures: string[];
   cancelled: boolean;
   /** Text of each paragraph with an issue, as checked. */
@@ -621,7 +656,11 @@ export interface ProofReport {
 
 export interface ProofProgress {
   docId: number;
-  stage: "rules" | "model" | "consistency" | "citations" | "done";
+  stage: "rules" | "screen" | "model" | "consistency" | "citations" | "done";
   done: number;
   total: number;
+  /** Findings of the step that just finished; the final report supersedes them. */
+  found?: ProofIssue[];
+  /** Text of each paragraph in `found`. */
+  paragraphs?: Record<number, string>;
 }

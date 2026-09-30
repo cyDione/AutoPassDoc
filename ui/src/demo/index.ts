@@ -22,6 +22,7 @@ import type {
   ParserInfo,
   ParserKind,
   PreReviewItem,
+  ProofIssue,
   ProofProgress,
   ProbeResult,
   Reviewer,
@@ -29,6 +30,7 @@ import type {
   SpanView,
   Summary,
 } from "../types";
+import type { SearchService, SearchServiceInfo } from "../types";
 import { PLACEHOLDER } from "../types";
 import { diffChars } from "./diff";
 import { DemoDocument, paragraphText, rewriteSpans, type DemoSource } from "./document";
@@ -46,6 +48,12 @@ import {
   seedReviewers,
   seedSettings,
 } from "./seed";
+
+const SEARCH_SERVICES: Omit<SearchServiceInfo, "hasKey">[] = [
+  { kind: "zhipu", name: "智谱搜索", keyUrl: "https://bigmodel.cn/usercenter/proj-mgmt/apikeys", note: "与智谱大模型共用 API Key，基础版约 0.01 元/次" },
+  { kind: "bocha", name: "博查搜索", keyUrl: "https://open.bochaai.com", note: "国内网页搜索 API，按次计费" },
+  { kind: "tavily", name: "Tavily", keyUrl: "https://app.tavily.com", note: "海外服务，每月有免费额度，国内网站覆盖较少" },
+];
 
 const SAMPLE_PATH = "示例/某市数字政府项目可研报告.docx";
 const GENERIC_AUTHOR = /^(administrator|admin|user|author|owner|作者|用户|未知|windows 用户|microsoft office 用户)$/i;
@@ -320,6 +328,7 @@ export function createDemoBackend(): Backend {
   }
 
   const parserKeys = new Set<ParserKind>();
+  const searchKeys = new Set<SearchService>();
   const enhanced = () => (settings.kb.parser !== "builtin" && parserKeys.has(settings.kb.parser) ? settings.kb.parser : null);
   const expandPaths = (paths: string[]) =>
     paths.flatMap((p) =>
@@ -880,14 +889,22 @@ export function createDemoBackend(): Backend {
         if (p) paragraphs.push([i, paragraphText(p)]);
       }
       proofCancel = false;
-      const emit = (stage: ProofProgress["stage"], done: number, total: number) => proofListeners.forEach((h) => h({ docId, stage, done, total }));
+      const emit = (stage: ProofProgress["stage"], done: number, total: number, found: ProofIssue[] = []) =>
+        proofListeners.forEach((h) =>
+          h({ docId, stage, done, total, found, paragraphs: Object.fromEntries(found.map((i) => [i.paragraph, paragraphs.find(([n]) => n === i.paragraph)?.[1] ?? ""])) }),
+        );
       emit("rules", 0, 1);
       await delay(300);
       const sections = options.useModel ? Math.min(8, Math.ceil(paragraphs.length / 12)) : 0;
       if (options.useModel && !settings.roles.chat.model) throw new Error("请先在设置 › 模型分配中选择大语言模型，或关闭“使用大语言模型”只做规则检查");
+      // Findings appear section by section, as the real backend reports them.
+      const all = demoProofread(paragraphs, options).issues;
+      emit("rules", 1, 1, all.filter((i) => i.source === "rule"));
+      const byModel = all.filter((i) => i.source === "model");
       for (let i = 0; i < sections && !proofCancel; i++) {
-        emit("model", i, sections);
         await delay(250);
+        const per = Math.ceil(byModel.length / sections);
+        emit("model", i + 1, sections, byModel.slice(i * per, (i + 1) * per));
       }
       if (options.categories.includes("citation")) {
         emit("citations", 0, 2);
@@ -931,6 +948,20 @@ export function createDemoBackend(): Backend {
       return { outcome: doc.commit("文档校对", { paragraphs }), applied };
     },
     async clearProofreadCache() {},
+
+    async searchServices() {
+      return SEARCH_SERVICES.map((s) => ({ ...s, hasKey: searchKeys.has(s.kind) }));
+    },
+    async setSearchKey(kind, key) {
+      if (kind === "none") throw new Error("请先选择搜索服务");
+      if (!key.trim()) throw new Error("Key 不能为空");
+      searchKeys.add(kind);
+      return SEARCH_SERVICES.map((s) => ({ ...s, hasKey: searchKeys.has(s.kind) }));
+    },
+    async clearSearchKey(kind) {
+      searchKeys.delete(kind);
+      return SEARCH_SERVICES.map((s) => ({ ...s, hasKey: searchKeys.has(s.kind) }));
+    },
 
     async parserInfos() {
       return (["mineru", "paddleocr"] as const).map((k) => ({ ...PARSER_INFO[k], hasKey: parserKeys.has(k) }));
@@ -1030,6 +1061,7 @@ export function createDemoBackend(): Backend {
       return {
         via: "local",
         queries: terms,
+        answer: model && need ? { text: "《上海市国民经济和社会发展统计公报》（2024年）", quote: "年末全市常住人口2480.26万人。", title: "2024年上海市国民经济和社会发展统计公报", url: `${site}/tjgb/20250319/2024gb.html` } : null,
         notes: model ? [] : ["尚未配置大语言模型，无法由 AI 生成搜索词和筛选结果"],
         results: [
           {
@@ -1078,6 +1110,11 @@ export function createDemoBackend(): Backend {
           },
         ],
       };
+    },
+    async webSavePageToKb(url) {
+      const name = `${decodeURIComponent(url.split("/").pop() ?? "网页").replace(/\.html?$/, "")}.md`;
+      const [report] = await importFiles([name]);
+      return report;
     },
     async webDownloadToKb(url) {
       const name = decodeURIComponent(url.split("/").pop() ?? "下载的资料.pdf");

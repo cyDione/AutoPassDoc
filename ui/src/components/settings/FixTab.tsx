@@ -3,10 +3,15 @@ import type { Settings } from "../../types";
 import { percent } from "../../util";
 
 type Fix = Settings["fix"];
+type Proofread = Settings["proofread"];
+
+const PROOFREAD_DEFAULTS: Proofread = { concurrency: 6, thinking: false };
 
 interface Props {
   fix: Fix;
   onChange: (fix: Fix) => void;
+  proofread: Proofread | undefined;
+  onProofreadChange: (proofread: Proofread) => void;
 }
 
 interface IntProps {
@@ -43,8 +48,9 @@ function IntField({ value, min, max, disabled, onChange }: IntProps) {
   );
 }
 
-export function FixTab({ fix, onChange }: Props) {
+export function FixTab({ fix, onChange, proofread = PROOFREAD_DEFAULTS, onProofreadChange }: Props) {
   const set = <K extends keyof Fix>(key: K, value: Fix[K]) => onChange({ ...fix, [key]: value });
+  const setProof = <K extends keyof Proofread>(key: K, value: Proofread[K]) => onProofreadChange({ ...proofread, [key]: value });
 
   return (
     <div className="settings-section">
@@ -141,6 +147,26 @@ export function FixTab({ fix, onChange }: Props) {
           <div className="setting-hint">某位审稿人每新增 N 条已处理的批注，就重新提炼一次画像。</div>
         </div>
         <IntField value={fix.profileEvery} min={1} max={100} onChange={(v) => set("profileEvery", v)} />
+      </div>
+
+      <div className="section-head">
+        <h3>文档校对</h3>
+      </div>
+
+      <div className="setting-row">
+        <div className="setting-text">
+          <div className="setting-label">校对并发数</div>
+          <div className="setting-hint">全文校对时同时通读的章节数。越大越快；服务商限流时（报 429）调小。</div>
+        </div>
+        <IntField value={proofread.concurrency} min={1} max={16} onChange={(v) => setProof("concurrency", v)} />
+      </div>
+
+      <div className="setting-row stacked">
+        <label className="check">
+          <input type="checkbox" checked={proofread.thinking} onChange={(e) => setProof("thinking", e.target.checked)} />
+          校对时让模型深度思考
+        </label>
+        <div className="setting-hint">默认关闭：不思考时每节快好几倍，查错别字基本不受影响；打开后更仔细，但全文校对会慢很多。</div>
       </div>
     </div>
   );

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Download, ExternalLink, FileText, Globe, Search, X } from "lucide-react";
+import { Copy, Download, ExternalLink, FileText, Globe, Search, Sparkles, X } from "lucide-react";
 import type { Backend } from "../api";
 import type { Notify } from "../hooks/useDocumentSession";
 import type { WebResult, WebSearchOutcome } from "../types";
@@ -24,7 +24,19 @@ interface Props {
 
 type Download = "running" | "done" | { error: string };
 
-function ResultRow({ r, download, onOpen, onDownload }: { r: WebResult; download: Download | undefined; onOpen: () => void; onDownload: () => void }) {
+function ResultRow({
+  r,
+  download,
+  onOpen,
+  onDownload,
+  onSavePage,
+}: {
+  r: WebResult;
+  download: Download | undefined;
+  onOpen: () => void;
+  onDownload: () => void;
+  onSavePage: () => void;
+}) {
   return (
     <div className="web-result">
       <div className="title-line">
@@ -50,6 +62,18 @@ function ResultRow({ r, download, onOpen, onDownload }: { r: WebResult; download
           ) : (
             <span className="muted">知识库暂不支持 .{r.fileType}，可在浏览器中打开后另存</span>
           ))}
+        {r.kind === "page" && r.trusted && (
+          <button
+            type="button"
+            className="btn sm"
+            title="没有附件、只有“打印”按钮的网页，可以把正文存成 Markdown 放进知识库"
+            disabled={download === "running" || download === "done"}
+            onClick={onSavePage}
+          >
+            {download === "running" ? <span className="spinner sm" /> : <Download size={12} />}
+            {download === "done" ? "正文已存入知识库" : "保存正文至知识库"}
+          </button>
+        )}
         {typeof download === "object" && <span className="form-message error">{download.error}</span>}
       </div>
     </div>
@@ -93,10 +117,10 @@ export function WebSearchDialog({ backend, request, onClose, notify }: Props) {
   }, [onClose]);
 
   const setDownload = (url: string, d: Download) => setDownloads((prev) => new Map(prev).set(url, d));
-  const download = async (r: WebResult) => {
+  const download = async (r: WebResult, page = false) => {
     setDownload(r.url, "running");
     try {
-      const report = await backend.webDownloadToKb(r.url);
+      const report = await (page ? backend.webSavePageToKb(r.url) : backend.webDownloadToKb(r.url));
       if (report.error) throw new Error(report.error);
       setDownload(r.url, "done");
       notify(report.unchanged ? `“${report.fileName}”已在知识库中` : `已把“${report.fileName}”存入知识库，重新生成时 AI 可以引用它`);
@@ -109,6 +133,14 @@ export function WebSearchDialog({ backend, request, onClose, notify }: Props) {
     ["白名单网站", results.filter((r) => r.trusted)],
     ["其他网站（请核实来源）", results.filter((r) => !r.trusted)],
   ];
+  const copy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      notify("已复制，粘贴到修改里替换“【待补充…】”后再应用");
+    } catch (e) {
+      notify(`无法复制：${errorMessage(e)}`, true);
+    }
+  };
   const open = (url: string) => void backend.openUrl(url).catch((e) => notify(`无法打开链接：${errorMessage(e)}`, true));
 
   return (
@@ -151,6 +183,23 @@ export function WebSearchDialog({ backend, request, onClose, notify }: Props) {
                 {outcome.queries.length > 1 && `，搜索词：${outcome.queries.join("｜")}`}
                 {outcome.notes.length > 0 && `（${outcome.notes.join("；")}）`}
               </div>
+              {outcome.answer && (
+                <div className="web-answer">
+                  <div className="head">
+                    <Sparkles size={13} /> AI 从网页原文中找到
+                  </div>
+                  <div className="text">{outcome.answer.text}</div>
+                  <div className="quote">原文：“{outcome.answer.quote}”</div>
+                  <div className="row">
+                    <button type="button" className="btn sm primary" onClick={() => void copy(outcome.answer!.text)}>
+                      <Copy size={12} /> 复制
+                    </button>
+                    <button type="button" className="link-btn" title={outcome.answer.url} onClick={() => open(outcome.answer!.url)}>
+                      出处：{outcome.answer.title} <ExternalLink size={11} />
+                    </button>
+                  </div>
+                </div>
+              )}
               {outcome.results.length === 0 && <div className="panel-empty">没有找到结果，换个说法再试试</div>}
               {groups.map(
                 ([label, rows]) =>
@@ -158,7 +207,7 @@ export function WebSearchDialog({ backend, request, onClose, notify }: Props) {
                     <section key={label} className="web-group">
                       {groups[1][1].length > 0 && <div className="group-label">{label}</div>}
                       {rows.map((r) => (
-                        <ResultRow key={r.url} r={r} download={downloads.get(r.url)} onOpen={() => open(r.url)} onDownload={() => void download(r)} />
+                        <ResultRow key={r.url} r={r} download={downloads.get(r.url)} onOpen={() => open(r.url)} onDownload={() => void download(r)} onSavePage={() => void download(r, true)} />
                       ))}
                     </section>
                   ),

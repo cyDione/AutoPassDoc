@@ -57,6 +57,7 @@ pub struct Core {
     /// Set while chunks are being embedded.
     pub(crate) embedding: AtomicBool,
     pub(crate) web: crate::web::WebState,
+    pub(crate) search_api: crate::search_api::SearchApiState,
     /// Service addresses and waits for enhanced parsing.
     pub(crate) enhanced: Mutex<EnhancedOptions>,
 }
@@ -80,6 +81,7 @@ impl Core {
             kb: Mutex::new(None),
             embedding: AtomicBool::new(false),
             web: crate::web::WebState::new()?,
+            search_api: crate::search_api::SearchApiState::default(),
             enhanced: Mutex::new(EnhancedOptions::default()),
         })
     }
