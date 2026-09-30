@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { CheckCircle2, ExternalLink, KeyRound, XCircle } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { CheckCircle2, ExternalLink, FileText, KeyRound, Sparkles, XCircle } from "lucide-react";
 import type { Backend } from "../../api";
 import type { ParserInfo, ParserTest, Settings } from "../../types";
 import { errorMessage } from "../../util";
@@ -25,7 +25,19 @@ function Link({ backend, url, children }: { backend: Backend; url: string; child
   );
 }
 
-function ServiceCard({ backend, info, onInfo, active }: { backend: Backend; info: ParserInfo; onInfo: (info: ParserInfo) => void; active: boolean }) {
+function ServiceCard({
+  backend,
+  info,
+  onInfo,
+  active,
+  children,
+}: {
+  backend: Backend;
+  info: ParserInfo;
+  onInfo: (info: ParserInfo) => void;
+  active: boolean;
+  children?: ReactNode;
+}) {
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState<"save" | "test" | "clear" | null>(null);
   const [result, setResult] = useState<ParserTest | { ok: boolean; message: string } | null>(null);
@@ -107,6 +119,7 @@ function ServiceCard({ backend, info, onInfo, active }: { backend: Backend; info
           )}
         </div>
       )}
+      {children}
       <div className="quota-note muted">
         {info.quotaNote}{" "}
         <Link backend={backend} url={info.consoleUrl}>
@@ -117,102 +130,135 @@ function ServiceCard({ backend, info, onInfo, active }: { backend: Backend; info
   );
 }
 
+const MODES = [
+  ["builtin", FileText, "普通模式", "不联网，在本机解析；扫描件和图片无法提取文字"],
+  ["enhanced", Sparkles, "增强模式", "PDF 和图片交给在线服务做版面分析、表格识别和 OCR，失败时退回普通模式"],
+] as const;
+
+type Service = ParserInfo["kind"];
+
+/** Model choice and address of the chosen service, shown inside its card. */
+function ServiceOptions({ kind, kb, set }: { kind: Service; kb: Kb; set: <K extends keyof Kb>(k: K, v: Kb[K]) => void }) {
+  if (kind === "mineru")
+    return (
+      <div className="field-grid">
+        <label className="field">
+          <span className="field-label">模型（vlm 精度更高，pipeline 速度更快）</span>
+          <select className="select" value={kb.mineruModel} onChange={(e) => set("mineruModel", e.target.value)}>
+            <option value="vlm">vlm</option>
+            <option value="pipeline">pipeline</option>
+          </select>
+        </label>
+      </div>
+    );
+  return (
+    <div className="field-grid">
+      <label className="field">
+        <span className="field-label">模型（PaddleOCR-VL 适合通用文档，PP-StructureV3 适合表格多的文档）</span>
+        <select className="select" value={kb.paddleocrModel} onChange={(e) => set("paddleocrModel", e.target.value)}>
+          <option value="PaddleOCR-VL-1.6">PaddleOCR-VL-1.6</option>
+          <option value="PP-StructureV3">PP-StructureV3</option>
+        </select>
+      </label>
+      <label className="field">
+        <span className="field-label">服务地址（使用自建服务时修改）</span>
+        <input className="input" value={kb.paddleocrBaseUrl} onChange={(e) => set("paddleocrBaseUrl", e.target.value)} />
+      </label>
+    </div>
+  );
+}
+
 export function KbTab({ backend, kb, onChange }: Props) {
   const [infos, setInfos] = useState<ParserInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The service to return to when switching from normal back to enhanced.
+  const [service, setService] = useState<Service>(kb.parser === "builtin" ? "mineru" : kb.parser);
 
   useEffect(() => {
     let cancelled = false;
     backend
       .parserInfos()
-      .then((list) => !cancelled && setInfos(list))
+      .then((list) => {
+        if (cancelled) return;
+        setInfos(list);
+        if (kb.parser === "builtin") {
+          const withKey = list.find((i) => i.hasKey);
+          if (withKey) setService(withKey.kind);
+        }
+      })
       .catch((e) => !cancelled && setError(errorMessage(e)));
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backend]);
 
   const set = <K extends keyof Kb>(k: K, v: Kb[K]) => onChange({ ...kb, [k]: v });
+  const enhanced = kb.parser !== "builtin";
   const chosen = infos?.find((i) => i.kind === kb.parser);
-  const enhanced = kb.parser !== "builtin" && !!chosen?.hasKey;
+  const pick = (kind: Service) => {
+    setService(kind);
+    set("parser", kind);
+  };
 
   return (
     <div className="settings-section">
       <div className="section-head">
         <h3>知识库</h3>
-        <span className={`pill sm ${enhanced ? "positive" : ""}`}>{enhanced ? `增强模式（${chosen?.name}）` : "普通模式"}</span>
+        <span className={`pill sm ${enhanced && chosen?.hasKey ? "positive" : ""}`}>
+          {!enhanced ? "普通模式" : chosen?.hasKey ? `增强模式（${chosen.name}）` : "增强模式（未保存 Key）"}
+        </span>
       </div>
-      <p className="hint">
-        普通模式在本机解析 Word、PDF 文字层、TXT 和 Markdown，Word 表格按“列名：值”逐行分块。增强模式把 PDF 和图片交给在线服务做版面分析、表格识别和
-        OCR，扫描件也能导入；在线服务失败时自动退回普通模式。Word、TXT、Markdown 始终在本机解析。
-      </p>
+      <p className="hint">Word、TXT、Markdown 始终在本机解析，Word 表格按“列名：值”逐行分块。解析方式只影响 PDF 和图片。</p>
 
       <div className="setting-row stacked">
         <div className="setting-label">PDF 和图片的解析方式</div>
-        <div className="radio-group vertical">
-          <label className="radio with-hint">
-            <input type="radio" checked={kb.parser === "builtin"} onChange={() => set("parser", "builtin")} />
-            <span>
-              普通模式
-              <small>不联网，扫描件和图片无法提取文字</small>
-            </span>
-          </label>
-          {(infos ?? []).map((i) => (
-            <label key={i.kind} className="radio with-hint">
-              <input type="radio" checked={kb.parser === i.kind} onChange={() => set("parser", i.kind)} />
-              <span>
-                增强模式：{i.name}
-                <small>{i.hasKey ? "Key 已保存" : "需要先在下方保存 Key 才会生效"}</small>
-              </span>
-            </label>
-          ))}
+        <div className="choice-cards wide">
+          {MODES.map(([key, Icon, label, hint]) => {
+            const on = key === "enhanced" ? enhanced : !enhanced;
+            return (
+              <button key={key} type="button" className={`choice-card${on ? " on" : ""}`} onClick={() => set("parser", key === "enhanced" ? service : "builtin")}>
+                <Icon size={18} strokeWidth={1.6} />
+                <span>{label}</span>
+                <small>{hint}</small>
+              </button>
+            );
+          })}
         </div>
       </div>
-      {kb.parser !== "builtin" && chosen && !chosen.hasKey && <div className="fix-note warn">还没有保存 {chosen.name} 的 Key，保存前导入仍使用普通模式。</div>}
+
+      {enhanced && (
+        <div className="setting-row stacked">
+          <div className="setting-label">增强服务</div>
+          <div className="segmented service-switch" role="tablist">
+            {(infos ?? []).map((i) => (
+              <button key={i.kind} type="button" role="tab" aria-selected={kb.parser === i.kind} className={kb.parser === i.kind ? "on" : ""} onClick={() => pick(i.kind)}>
+                {i.name}
+                {i.hasKey && <CheckCircle2 size={12} className="has-key" aria-label="已保存 Key" />}
+              </button>
+            ))}
+          </div>
+          {chosen && !chosen.hasKey && <div className="fix-note warn">还没有保存 {chosen.name} 的 Key，保存前导入仍使用普通模式。</div>}
+          {chosen && (
+            <ServiceCard
+              key={chosen.kind}
+              backend={backend}
+              info={chosen}
+              active
+              onInfo={(next) => setInfos((list) => list?.map((i) => (i.kind === next.kind ? next : i)) ?? null)}
+            >
+              <ServiceOptions kind={chosen.kind} kb={kb} set={set} />
+            </ServiceCard>
+          )}
+        </div>
+      )}
 
       {error && <div className="form-message error">{error}</div>}
-      {!infos && !error && (
+      {enhanced && !infos && !error && (
         <div className="loading">
           <span className="spinner" /> 正在加载…
         </div>
       )}
-      {infos?.map((info) => (
-        <ServiceCard
-          key={info.kind}
-          backend={backend}
-          info={info}
-          active={kb.parser === info.kind}
-          onInfo={(next) => setInfos((list) => list?.map((i) => (i.kind === next.kind ? next : i)) ?? null)}
-        />
-      ))}
-
-      <div className="setting-row">
-        <div className="setting-text">
-          <div className="setting-label">MinerU 模型</div>
-          <div className="setting-hint">vlm 精度更高；pipeline 速度更快。</div>
-        </div>
-        <select className="select" value={kb.mineruModel} onChange={(e) => set("mineruModel", e.target.value)}>
-          <option value="vlm">vlm</option>
-          <option value="pipeline">pipeline</option>
-        </select>
-      </div>
-      <div className="setting-row">
-        <div className="setting-text">
-          <div className="setting-label">PaddleOCR 模型</div>
-          <div className="setting-hint">PaddleOCR-VL 适合通用文档；PP-StructureV3 适合表格多的文档。</div>
-        </div>
-        <select className="select" value={kb.paddleocrModel} onChange={(e) => set("paddleocrModel", e.target.value)}>
-          <option value="PaddleOCR-VL-1.6">PaddleOCR-VL-1.6</option>
-          <option value="PP-StructureV3">PP-StructureV3</option>
-        </select>
-      </div>
-      <div className="setting-row">
-        <div className="setting-text">
-          <div className="setting-label">PaddleOCR 服务地址</div>
-          <div className="setting-hint">使用自建服务时修改。</div>
-        </div>
-        <input className="input" value={kb.paddleocrBaseUrl} onChange={(e) => set("paddleocrBaseUrl", e.target.value)} />
-      </div>
     </div>
   );
 }

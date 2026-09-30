@@ -314,8 +314,27 @@
 }
 
 .setting-text {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
+}
+
+/* A control beside the label keeps a fixed share of the row, so the label never collapses to one character per line. */
+.setting-row:not(.stacked) > .setting-text {
+  min-width: 200px;
+}
+
+.setting-row:not(.stacked) > .select,
+.setting-row:not(.stacked) > .input {
+  flex: 0 1 280px;
+  width: 280px;
+}
+
+.setting-row:not(.stacked) > :not(.setting-text) {
+  flex-shrink: 1;
+}
+
+.setting-row.stacked > .select {
+  max-width: 480px;
 }
 
 .setting-label {
@@ -616,4 +635,31 @@
   height: 100%;
   background: var(--accent);
   transition: width 0.2s;
+}
+
+.service-switch {
+  max-width: 320px;
+}
+
+.service-switch button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.service-switch .has-key {
+  color: var(--positive);
+}
+
+.parser-card > .field-grid {
+  margin: 12px 0 0;
+}
+
+.parser-card .field-label {
+  white-space: normal;
+}
+
+.setting-row.stacked > .segmented.compact {
+  align-self: flex-start;
 }
